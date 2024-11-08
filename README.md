@@ -16,3 +16,6 @@ Adapted examples from Pinocchio GitHub for B2G description (Unitree B2 quadruped
 - COM: Move center of mass up and down, while arm end effector position remains constant.
 - IK: Given desired arm end effector position and rotation, compute whole-body joint angles.
 - Casadi: Formulate optimization problem in joint space (states: joint positions, inputs: joint velocities). Track desired goal state.
+
+New example:
+- Dynamics: Uses centroidal dynamics through Pinocchio. TODO: Interact with ground, add forces to optimization problem.
