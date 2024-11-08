@@ -1,6 +1,6 @@
 # Loco-manipulation with Pinocchio
 
-![alt text](image.png)
+![alt text](b2g_description/b2g_image.png)
 
 ## Setup
 
