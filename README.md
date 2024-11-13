@@ -20,11 +20,9 @@ Adapted examples from Pinocchio GitHub for B2G description (Unitree B2 quadruped
 - Casadi: Formulate optimization problem in joint space (states: joint positions, inputs: joint velocities). Track desired goal state.
 
 Centroidal Dynamics:
-- Old: Uses Casadi opti stack. Doesn't consider ground reaction forces.
-- New: Uses Casadi SX formulation. This is necessary because `pinocchio.casadi` provides this (eg. for Jacobians). Considers ground reaction forces and end-effector constraints. Solution is not yet satisfactory.
-
+- NLP: Uses `casadi.nlpsol` with SX expressions. This is the format recieved from `pinocchio.casadi`. The OCP doesn't converge, which is why it is better to use Opti.
+- Opti: Uses `casadi.opti` with MX expressions. SX are converted to MX using a `casadi.Function`. The OCP converges for a simple task of moving the arm while remaining in stance.
 
 ## TODO
 
-- Debug new centroidal dynamics formulation.
 - Add motion commands: Gait pattern, stepping locations / bezier curves, end effector position / rotation. Add to optimization through constraints & objective.

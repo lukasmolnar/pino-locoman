@@ -30,8 +30,8 @@ x0 = [
     0, 0.7, -1.5, 0, 0.7, -1.5,
     0, 0.26, -0.26, 0, 0, 0, 0
 ]
-nodes = 80
-dt = 0.02
+nodes = 20
+dt = 0.05
 
 # Other variables
 x_nom = [
@@ -45,7 +45,6 @@ x_nom = [
 assert len(x_goal) == N_STATES
 assert len(x0) == N_STATES
 assert len(x_nom) == N_STATES
-
 
 def state_integrate(model):
     x = casadi.SX.sym("x", 6 + model.nq)
@@ -79,30 +78,48 @@ def state_difference(model):
     return casadi.Function("difference", [x0, x1], [x_diff], ["x0", "x1"], ["x_diff"])
 
 
-def centroidal_dynamics(model, data, Ag, mass, dt, ne=4):
+def compute_A_inv(A):
+    mass = A[0, 0]
+    A_22_inv = casadi.inv(A[3:, 3:])
+    A_inv = casadi.SX.zeros(6, 6)
+    A_inv[:3, :3] = 1 / mass * casadi.SX.eye(3)
+    A_inv[:3, 3:] = -1 / mass * A[:3, 3:] @ A_22_inv
+    A_inv[3:, :3] = casadi.SX.zeros(3, 3)
+    A_inv[3:, 3:] = A_22_inv
+    return A_inv
+
+
+def centroidal_dynamics(model, data, ee_frame_ids, dt):
     # States
     p_com = casadi.SX.sym("p_com", 3)  # COM linear momentum
     l_com = casadi.SX.sym("l_com", 3)  # COM angular momentum
     q = casadi.SX.sym("q", model.nq)  # generalized coords
 
     # Inputs
-    f_e = [casadi.SX.sym(f"f_e_{i}", 3) for i in range(ne)]  # end-effector forces
+    f_e = [casadi.SX.sym(f"f_e_{i}", 3) for i in range(len(ee_frame_ids))]  # end-effector forces
     v = casadi.SX.sym("v", N_JOINTS)  # joint velocities
 
+    # Compute all terms
+    dq = casadi.vertcat([0] * 6, v)  # zero base velocity
+    cpin.computeAllTerms(model, data, q, dq)
+
     # COM Dynamics
-    g = np.array([0, 0, -9.81 * mass])
+    g = np.array([0, 0, -9.81 * data.mass[0]])
     dp_com = sum(f_e) + g
     dl_com = casadi.SX.zeros(3)
-    # TODO: dl_com depending on step locations
+    # for idx, frame_id in enumerate(ee_frame_ids):
+    #     r_com_ee = data.oMf[frame_id].translation - data.com[0]
+    #     dl_com += casadi.cross(r_com_ee, f_e[idx])
 
     h = casadi.vertcat(p_com, l_com)
     dh = casadi.vertcat(dp_com, dl_com)
 
     # Joint Dynamics
-    Ag_b = Ag[:, :6]
-    Ag_j = Ag[:, 6:]
-    Ag_b_reg = Ag_b + 1e-6 * casadi.SX.eye(6)
-    dq_b = casadi.inv(Ag_b_reg) @ (h - Ag_j @ v)
+    Ab = data.Ag[:, :6]
+    Aj = data.Ag[:, 6:]
+    Ab_inv = casadi.inv(Ab + 1e-8 * casadi.SX.eye(6))
+    # Ab_inv = compute_A_inv(Ab)
+    dq_b = Ab_inv @ (h - Aj @ v)
     dq_j = v
 
     x = casadi.vertcat(h, q)
@@ -117,32 +134,33 @@ def centroidal_dynamics(model, data, Ag, mass, dt, ne=4):
     return casadi.Function("int_dyn", [x, u], [x_next], ["x", "u"], ["x_next"])
 
 
+def get_frame_velocity(model, data, frame_id):
+    q = casadi.SX.sym("q", model.nq)
+    v = casadi.SX.sym("v", N_JOINTS)
+    dq = casadi.vertcat([0] * 6, v)  # zero base velocity
+
+    cpin.computeAllTerms(model, data, q, dq)
+    vel = cpin.getFrameVelocity(model, data, frame_id)
+    vel_lin = vel.vector[:3]
+
+    return casadi.Function("frame_velocity", [q, v], [vel_lin], ["q", "v"], ["vel_lin"])
+
+
 class OptimalControlProblem:
-    def __init__(
-            self,
-            model,
-            Ag,
-            mass,
-            ee_frame_ids,
-        ):
+    def __init__(self, model, ee_frame_ids):
         self.opti = casadi.Opti()
         self.model = model
 
-        self.c_model = cpin.Model(model)
+        self.c_model = cpin.Model(self.model)
         self.c_data = self.c_model.createData()
         print(self.c_model)
 
         ndx = N_STATES - 1  # x includes quaternion, dx does not
         nu = N_INPUTS
-        ne = len(ee_frame_ids)
         mu = 0.5  # friction coefficient
 
-        self.c_dxs = casadi.SX.sym("dx", ndx, nodes + 1)
-        self.c_us = casadi.SX.sym("u", nu, nodes)
-
-        constraints = []
-        g_lb = []
-        g_ub = []
+        self.c_dxs = self.opti.variable(ndx, nodes + 1)  # state trajectory
+        self.c_us = self.opti.variable(nu, nodes)  # control trajectory
 
         # Objective function
         obj = 0
@@ -159,18 +177,17 @@ class OptimalControlProblem:
                 # + 1e-5 * 0.5 * self.c_us[:, i].T @ self.c_us[:, i]
             )
 
+        self.opti.minimize(obj)
+
         # Dynamical constraints
         for i in range(nodes):
             x_i = state_integrate(self.c_model)(x_nom, self.c_dxs[:, i])
             x_i_1 = state_integrate(self.c_model)(x_nom, self.c_dxs[:, i + 1])
-            f_x_u = centroidal_dynamics(self.c_model, self.c_data, Ag, mass, dt, ne)(
+            f_x_u = centroidal_dynamics(self.c_model, self.c_data, ee_frame_ids, dt)(
                 x_i, self.c_us[:, i]
             )
             gap = state_difference(self.c_model)(f_x_u, x_i_1)
-            constraints.append(gap)
-            for _ in range(ndx):
-                g_lb.append(0)
-                g_ub.append(0)
+            self.opti.subject_to(gap == [0] * ndx)
 
         # Contact constraints
         for i in range(nodes):
@@ -180,58 +197,38 @@ class OptimalControlProblem:
                 f_normal = f_e_j[2]
                 f_tangent_square = f_e_j[0]**2 + f_e_j[1]**2
 
-                constraints.append(f_normal)
-                g_lb.append(0)
-                g_ub.append(casadi.inf)
-                constraints.append(mu**2 * f_normal**2 - f_tangent_square)
-                g_lb.append(0)
-                g_ub.append(casadi.inf)
+                self.opti.subject_to(f_normal >= 0)
+                self.opti.subject_to(mu**2 * f_normal**2 >= f_tangent_square)
 
                 # Zero end-effector velocity
                 x_i = state_integrate(self.c_model)(x_nom, self.c_dxs[:, i])
                 q_i = x_i[6:]
                 v_i = self.c_us[12:, i]
-                dq_i = casadi.vertcat([0] * 6, v_i)  # zero base velocity
 
-                cpin.computeAllTerms(self.c_model, self.c_data, q_i, dq_i)
-                vel = cpin.getFrameVelocity(self.c_model, self.c_data, frame_id)
-                vel_lin = vel.vector[:3]
-                constraints.append(vel_lin)
-                for _ in range(3):
-                    g_lb.append(0)
-                    g_ub.append(0)
+                vel_lin = get_frame_velocity(self.c_model, self.c_data, frame_id)(q_i, v_i)
+                self.opti.subject_to(vel_lin == [0] * 3)
 
-        # Control constraints
-        # TODO
+        # State and input constraints
+        self.opti.subject_to(self.opti.bounded(-1, self.c_dxs, 1))
+        self.opti.subject_to(self.opti.bounded(-500, self.c_us[:12, :], 500))
+        self.opti.subject_to(self.opti.bounded(-1, self.c_us[12:, :], 1))
 
         # Final constraint
         x_N = state_integrate(self.c_model)(x_nom, self.c_dxs[:, nodes])
         e_goal = state_difference(self.c_model)(x_N, x_goal)
-        constraints.append(e_goal)
-        for _ in range(ndx):
-            g_lb.append(0)
-            g_ub.append(0)
+        self.opti.subject_to(e_goal == [0] * ndx)
 
         # Initial state
         x_0 = state_integrate(self.c_model)(x_nom, self.c_dxs[:, 0])
-        constraints.append(state_difference(self.c_model)(x0, x_0))
-        for _ in range(ndx):
-            g_lb.append(0)
-            g_ub.append(0)
+        self.opti.subject_to(state_difference(self.c_model)(x0, x_0) == [0] * ndx)
 
         # Warm start
-        dxs_init = np.vstack([np.zeros(ndx) for _ in range(nodes + 1)])
-        us_init = np.vstack([np.zeros(nu) for _ in range(nodes)])
-        self.x_init = np.vstack([dxs_init.reshape(-1, 1), us_init.reshape(-1, 1)])
-
-        # Initialize NLP
-        self.nlp = {
-            "x": casadi.vertcat(casadi.reshape(self.c_dxs, -1, 1), casadi.reshape(self.c_us, -1, 1)),
-            "f": obj,
-            "g": casadi.vertcat(*constraints)
-        }
-        self.g_lb = np.array(g_lb)
-        self.g_ub = np.array(g_ub)
+        self.opti.set_initial(
+            self.c_dxs, np.vstack([np.zeros(ndx) for _ in range(nodes + 1)]).T
+        )
+        self.opti.set_initial(
+            self.c_us, np.vstack([np.zeros(nu) for _ in range(nodes)]).T
+        )
 
     def solve(self, approx_hessian=True):
         opts = {"verbose": False}
@@ -246,43 +243,61 @@ class OptimalControlProblem:
         if approx_hessian:
             opts["ipopt"]["hessian_approximation"] = "limited-memory"
 
-        solver = casadi.nlpsol("solver", "ipopt", self.nlp, opts)
+        # Solver initialization
+        self.opti.solver("ipopt", opts)  # set numerical backend
 
         try:
-            self.sol = solver(x0=self.x_init, lbg=self.g_lb, ubg=self.g_ub)
-        except:
-            print("Solver failed!")
-            self.sol = None
+            self.sol = self.opti.solve()
+        except:  # noqa: E722
+            self.sol = self.opti.debug
 
-        # TODO: check solution
-        self._retract_trajectory()
+        if self.sol.stats()["return_status"] == "Solve_Succeeded":
+            self._retract_trajectory()
+            self._compute_gaps()
 
     def _retract_trajectory(self):
-        self.hs = []
         self.qs = []
         self.us = []
+        self.gaps = []
 
-        x_sol = self.sol["x"]
-        x_size = N_STATES - 1 + N_INPUTS
-        q_nom = np.array(x_nom)[6:]
-
-        for i in range(nodes):
-            x = np.array(x_sol[i * x_size : (i + 1) * x_size])
-            self.hs.append(x[:6])
-
-            dq = x[6:N_STATES-1]
-            q = pin.integrate(self.model, q_nom, dq)
-
+        for idx, (dx_sol, u_sol) in enumerate(
+            zip(self.sol.value(self.c_dxs).T, self.sol.value(self.c_us).T)
+        ):
+            q = pin.integrate(self.model, np.array(x_nom)[6:], dx_sol[6:])
             self.qs.append(q)
-            self.us.append(x[N_STATES-1:])
+            self.us.append(u_sol)
 
-        x_last = np.array(x_sol[nodes * x_size :])
-        assert(len(x_last) == N_STATES-1)
-        self.hs.append(x_last[:6])
-
-        dq = x_last[6:]
-        q = pin.integrate(self.model, q_nom, dq)
+        q = pin.integrate(
+            self.model, np.array(x_nom)[6:], self.sol.value(self.c_dxs).T[nodes, 6:]
+        )
         self.qs.append(q)
+
+    def _compute_gaps(self):
+        # TODO
+        return
+        # self.gaps = {"vector": [np.zeros(self.model.nv)], "norm": [0]}
+
+        # nq = self.model.nq
+
+        # for idx, (x, u) in enumerate(zip(self.xs, self.us)):
+        #     x_pin = self._simulate_step(x, u)
+
+        #     gap_q = pin.difference(self.model, x_pin[:nq], self.xs[idx + 1][:nq])
+        #     gap_v = self.xs[idx + 1][nq:] - x_pin[nq:]
+
+        #     gap = np.concatenate([gap_q, gap_v])
+        #     self.gaps["vector"].append(gap)
+        #     self.gaps["norm"].append(np.linalg.norm(gap))
+
+    def _simulate_step(self, x, u):
+        # TODO
+        return
+        # h = x[:6]
+        # q = x[6:]
+        # dx = np.concatenate((np.zeros(6), u * dt))
+        # x_next = pin.integrate(self.model, x, dx)
+
+        # return x_next
 
 
 def main():
@@ -292,36 +307,33 @@ def main():
 
     robot.q0 = robot.model.referenceConfigurations[REFERENCE_POSE]
     pin.computeAllTerms(model, data, robot.q0, np.zeros(model.nv))
-    Ag = data.Ag
-    mass = data.mass[0]
 
     ee_frame_ids = [model.getFrameId(f) for f in ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]]
 
-    oc_problem = OptimalControlProblem(
-        model,
-        Ag,
-        mass,
-        ee_frame_ids,
-    )
+    oc_problem = OptimalControlProblem(model, ee_frame_ids)
     oc_problem.solve(approx_hessian=True)
 
-    qs = oc_problem.qs
-    us = oc_problem.us
+    qs = np.vstack(oc_problem.qs)
+    us = np.vstack(oc_problem.us)
 
-    print("Initial q: ", qs[0])
-    print("Final q: ", qs[-1])
+    print("Initial state: ", qs[0])
+    print("Final state: ", qs[-1])
 
     # Visualize
     robot.initViewer()
     robot.loadViewerModel("pinocchio")
-    for _ in range(20):
+    for _ in range(10):
         for k in range(nodes):
-            q = np.array(qs[k])
-            v = np.array(us[k])[12:].flatten()
+            q = qs[k]
+            u = us[k]
+            v = u[12:]
             dq = np.concatenate((np.zeros(6), v))  # zero base velocity
             pin.computeAllTerms(model, data, q, dq)
-            v_foot = pin.getFrameVelocity(model, data, ee_frame_ids[0])
-            # print("Foot vel: ", v_foot)
+            v_foot = pin.getFrameVelocity(model, data, ee_frame_ids[0]).vector[:3]
+            print("k: ", k)
+            print("q: ", q)
+            print("u: ", u)
+            print("v_foot: ", v_foot)
 
             robot.display(q)
             sleep(dt)
