@@ -107,9 +107,9 @@ def centroidal_dynamics(model, data, ee_frame_ids, dt):
     g = np.array([0, 0, -9.81 * data.mass[0]])
     dp_com = sum(f_e) + g
     dl_com = casadi.SX.zeros(3)
-    # for idx, frame_id in enumerate(ee_frame_ids):
-    #     r_com_ee = data.oMf[frame_id].translation - data.com[0]
-    #     dl_com += casadi.cross(r_com_ee, f_e[idx])
+    for idx, frame_id in enumerate(ee_frame_ids):
+        r_ee = data.oMf[frame_id].translation
+        dl_com += casadi.cross(r_ee, f_e[idx])
 
     h = casadi.vertcat(p_com, l_com)
     dh = casadi.vertcat(dp_com, dl_com)
