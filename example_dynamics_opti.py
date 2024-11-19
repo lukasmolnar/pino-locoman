@@ -16,7 +16,7 @@ N_JOINTS = 19  # for now including gripper
 N_STATES = 13 + N_JOINTS  # 6 centroidal momentum + 7 floating base + joint positions
 N_INPUTS = 12 + N_JOINTS  # 4x3 end-effector forces + joint velocities
 
-DEBUG = True  # print info
+DEBUG = False  # print info
 
 # Problem parameters
 x_goal = [
@@ -26,7 +26,7 @@ x_goal = [
     0, 0.7, -1.5, 0, 0.7, -1.5,
     0, 0.5, -0.5, 0, 0, 0, 0
 ]
-x0 = [
+x_init = [
     0, 0, 0, 0, 0, 0,
     0, 0, 0.55, 0, 0, 0, 1,
     0, 0.7, -1.5, 0, 0.7, -1.5,
@@ -44,7 +44,10 @@ Q = np.diag(x_weights)
 nodes = 20
 dt = 0.05
 
-# Other variables
+contact_feet = ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]
+swing_feet = []
+
+# Nominal state (from which dx is integrated)
 x_nom = [
     0, 0, 0, 0, 0, 0,
     0, 0, 0.55, 0, 0, 0, 1,
@@ -54,19 +57,17 @@ x_nom = [
 ]
 
 assert len(x_goal) == N_STATES
-assert len(x0) == N_STATES
+assert len(x_init) == N_STATES
 assert len(x_nom) == N_STATES
 assert len(x_weights) == N_STATES - 1  # no quaternion
 
 
 class OptimalControlProblem:
-    def __init__(self, model, ee_frame_ids):
+    def __init__(self, model, contact_ee_ids, swing_ee_ids):
         self.opti = casadi.Opti()
         self.model = model
 
-        self.c_model = cpin.Model(self.model)
-        self.c_data = self.c_model.createData()
-        print(self.c_model)
+        self.dyn = CentroidalDynamics(model, contact_ee_ids)
 
         ndx = N_STATES - 1  # x includes quaternion, dx does not
         nu = N_INPUTS
@@ -80,12 +81,12 @@ class OptimalControlProblem:
         obj = 0
 
         # Interpolate between start and goal
-        x_interpol = np.linspace(x0, x_goal, nodes + 1)
+        x_interpol = np.linspace(x_init, x_goal, nodes + 1)
 
         # State & Control regularization
         for i in range(nodes + 1):
-            x_i = state_integrate(self.c_model)(x_nom, self.c_dxs[:, i])
-            e_reg = state_difference(self.c_model)(x_interpol[i], x_i)
+            x_i = self.dyn.state_integrate()(x_nom, self.c_dxs[:, i])
+            e_reg = self.dyn.state_difference()(x_interpol[i], x_i)
             dq_b_i = self.c_dq_b[:, i]
             obj += (
                 1e-1 * 0.5 * e_reg.T @ Q @ e_reg
@@ -96,23 +97,23 @@ class OptimalControlProblem:
 
         for i in range(nodes):
             # Dynamical constraints
-            x = state_integrate(self.c_model)(x_nom, self.c_dxs[:, i])
-            x_next = state_integrate(self.c_model)(x_nom, self.c_dxs[:, i + 1])
-            x_next_dyn = centroidal_dynamics(self.c_model, self.c_data, ee_frame_ids, dt)(
+            x = self.dyn.state_integrate()(x_nom, self.c_dxs[:, i])
+            x_next = self.dyn.state_integrate()(x_nom, self.c_dxs[:, i + 1])
+            x_next_dyn = self.dyn.centroidal_dynamics()(
                 x, self.c_us[:, i], self.c_dq_b[:, i]
             )
-            gap = state_difference(self.c_model)(x_next, x_next_dyn)
+            gap = self.dyn.state_difference()(x_next, x_next_dyn)
             self.opti.subject_to(gap == [0] * ndx)
 
             # Base velocity
             h = x[:6]
             q = x[6:]
             dq_j = self.c_us[12:, i]
-            dq_b = get_base_velocity(self.c_model, self.c_data, )(h, q, dq_j)
+            dq_b = self.dyn.get_base_velocity()(h, q, dq_j)
             self.opti.subject_to(self.c_dq_b[:, i] == dq_b)
 
             # Contact constraints
-            for idx, frame_id in enumerate(ee_frame_ids):
+            for idx, frame_id in enumerate(contact_ee_ids):
                 # Friction cone
                 f_e = self.c_us[idx * 3 : (idx + 1) * 3, i]
                 f_normal = f_e[2]
@@ -123,7 +124,7 @@ class OptimalControlProblem:
 
                 # Zero end-effector velocity
                 dq = casadi.vertcat(dq_b, dq_j)
-                vel_lin = get_frame_velocity(self.c_model, self.c_data, frame_id)(q, dq)
+                vel_lin = self.dyn.get_frame_velocity(frame_id)(q, dq)
                 self.opti.subject_to(vel_lin == [0] * 3)
 
         # State and input constraints
@@ -132,13 +133,13 @@ class OptimalControlProblem:
         self.opti.subject_to(self.opti.bounded(-1, self.c_us[12:, :], 1))
 
         # Final constraint
-        # x_N = state_integrate(self.c_model)(x_nom, self.c_dxs[:, nodes])
-        # e_goal = state_difference(self.c_model)(x_N, x_goal)
+        # x_N = state_integrate()(x_nom, self.c_dxs[:, nodes])
+        # e_goal = state_difference()(x_N, x_goal)
         # self.opti.subject_to(e_goal == [0] * ndx)
 
         # Initial state
-        x_0 = state_integrate(self.c_model)(x_nom, self.c_dxs[:, 0])
-        self.opti.subject_to(state_difference(self.c_model)(x0, x_0) == [0] * ndx)
+        x_0 = self.dyn.state_integrate()(x_nom, self.c_dxs[:, 0])
+        self.opti.subject_to(self.dyn.state_difference()(x_0, x_init) == [0] * ndx)
 
         # Warm start
         self.opti.set_initial(
@@ -236,9 +237,10 @@ def main():
     robot.q0 = robot.model.referenceConfigurations[REFERENCE_POSE]
     pin.computeAllTerms(model, data, robot.q0, np.zeros(model.nv))
 
-    ee_frame_ids = [model.getFrameId(f) for f in ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]]
+    contact_ee_ids = [model.getFrameId(f) for f in contact_feet]
+    swing_ee_ids = [model.getFrameId(f) for f in swing_feet]
 
-    oc_problem = OptimalControlProblem(model, ee_frame_ids)
+    oc_problem = OptimalControlProblem(model, contact_ee_ids, swing_ee_ids)
     oc_problem.solve(approx_hessian=True)
 
     hs = np.vstack(oc_problem.hs)
@@ -264,8 +266,10 @@ def main():
                 pin.forwardKinematics(model, data, q, dq)
                 pin.computeCentroidalMomentum(model, data)
                 pin.updateFramePlacements(model, data)
-                v_foot = pin.getFrameVelocity(model, data, ee_frame_ids[0]).vector[:3]
+                v_foot = pin.getFrameVelocity(model, data, contact_ee_ids[0]).vector[:3]
+                r_ee = data.oMf[contact_ee_ids[0]].translation
                 print("k: ", k)
+                print("r_ee: ", r_ee)
                 print("com_true: ", data.com[0])
                 print("h: ", h)
                 print("h_true: ", data.hg.vector)
