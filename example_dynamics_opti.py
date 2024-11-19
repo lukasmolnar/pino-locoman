@@ -2,11 +2,10 @@ from time import sleep
 
 import numpy as np
 import pinocchio as pin
-import pinocchio.casadi as cpin
 import casadi
 
-from load import load
-from centroidal_dynamics import *
+from helpers import *
+from centroidal_dynamics import CentroidalDynamics
 
 URDF_PATH = "b2g_description/urdf/b2g.urdf"
 SRDF_PATH = "b2g_description/srdf/b2g.srdf"
@@ -21,7 +20,7 @@ DEBUG = False  # print info
 # Problem parameters
 x_goal = [
     0, 0, 0, 0, 0, 0,
-    0, 0, 0.6, 0, 0, 0, 1,
+    0, 0, 0.55, 0, 0, 0, 1,
     0, 0.7, -1.5, 0, 0.7, -1.5,
     0, 0.7, -1.5, 0, 0.7, -1.5,
     0, 0.5, -0.5, 0, 0, 0, 0
@@ -44,8 +43,8 @@ Q = np.diag(x_weights)
 nodes = 20
 dt = 0.05
 
-contact_feet = ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]
-swing_feet = []
+contact_feet = ["FR_foot", "RL_foot"]
+swing_feet = ["FL_foot", "RR_foot"]
 
 # Nominal state (from which dx is integrated)
 x_nom = [
@@ -63,14 +62,21 @@ assert len(x_weights) == N_STATES - 1  # no quaternion
 
 
 class OptimalControlProblem:
-    def __init__(self, model, contact_ee_ids, swing_ee_ids):
+    def __init__(self, model, data, contact_ee_ids, swing_ee_ids):
         self.opti = casadi.Opti()
         self.model = model
+        self.data = data
+
+        swing_ee_positions = {}
+        for ee_id in swing_ee_ids:
+            r_ee = self.data.oMf[ee_id].translation
+            swing_ee_positions[ee_id] = r_ee
 
         self.dyn = CentroidalDynamics(model, contact_ee_ids)
 
         ndx = N_STATES - 1  # x includes quaternion, dx does not
-        nu = N_INPUTS
+        nf = 3 * len(contact_ee_ids)  # number of contact forces variables
+        nu = nf + N_JOINTS  # total input variables
         mu = 0.5  # friction coefficient
 
         self.c_dxs = self.opti.variable(ndx, nodes + 1)  # state trajectory
@@ -108,8 +114,9 @@ class OptimalControlProblem:
             # Base velocity
             h = x[:6]
             q = x[6:]
-            dq_j = self.c_us[12:, i]
+            dq_j = self.c_us[nf:, i]
             dq_b = self.dyn.get_base_velocity()(h, q, dq_j)
+            dq = casadi.vertcat(dq_b, dq_j)
             self.opti.subject_to(self.c_dq_b[:, i] == dq_b)
 
             # Contact constraints
@@ -123,14 +130,19 @@ class OptimalControlProblem:
                 self.opti.subject_to(mu**2 * f_normal**2 >= f_tangent_square)
 
                 # Zero end-effector velocity
-                dq = casadi.vertcat(dq_b, dq_j)
                 vel_lin = self.dyn.get_frame_velocity(frame_id)(q, dq)
                 self.opti.subject_to(vel_lin == [0] * 3)
 
+            # Swing foot trajectory
+            for frame_id, ee_pos in swing_ee_positions.items():
+                vel = self.dyn.get_frame_velocity(frame_id)(q, dq)
+                vel_des = swing_bezier_vel(ee_pos, dt * i, dt * nodes)
+                self.opti.subject_to(vel == vel_des)
+
         # State and input constraints
         self.opti.subject_to(self.opti.bounded(-1, self.c_dxs, 1))
-        self.opti.subject_to(self.opti.bounded(-500, self.c_us[:12, :], 500))
-        self.opti.subject_to(self.opti.bounded(-1, self.c_us[12:, :], 1))
+        self.opti.subject_to(self.opti.bounded(-500, self.c_us[:nf, :], 500))
+        self.opti.subject_to(self.opti.bounded(-1, self.c_us[nf:, :], 1))
 
         # Final constraint
         # x_N = state_integrate()(x_nom, self.c_dxs[:, nodes])
@@ -233,14 +245,14 @@ def main():
     robot = load(URDF_PATH, SRDF_PATH)
     model = robot.model
     data = robot.data
-
-    robot.q0 = robot.model.referenceConfigurations[REFERENCE_POSE]
-    pin.computeAllTerms(model, data, robot.q0, np.zeros(model.nv))
+    q0 = model.referenceConfigurations[REFERENCE_POSE]
+    pin.forwardKinematics(model, data, q0)
+    pin.updateFramePlacements(model, data)
 
     contact_ee_ids = [model.getFrameId(f) for f in contact_feet]
     swing_ee_ids = [model.getFrameId(f) for f in swing_feet]
 
-    oc_problem = OptimalControlProblem(model, contact_ee_ids, swing_ee_ids)
+    oc_problem = OptimalControlProblem(model, data, contact_ee_ids, swing_ee_ids)
     oc_problem.solve(approx_hessian=True)
 
     hs = np.vstack(oc_problem.hs)

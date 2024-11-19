@@ -102,6 +102,14 @@ class CentroidalDynamics:
 
         return casadi.Function("base_vel", [h, q, dq_j], [dq_b], ["h", "q", "dq_j"], ["dq_b"])
 
+    def get_frame_position(self, frame_id):
+        q = casadi.SX.sym("q", self.nq)
+
+        # TODO: Check Pinocchio terms
+        cpin.forwardKinematics(self.model, self.data, q)
+        pos = self.data.oMf[frame_id].translation
+
+        return casadi.Function("frame_pos", [q], [pos], ["q"], ["pos"])
 
     def get_frame_velocity(self, frame_id):
         q = casadi.SX.sym("q", self.nq)
