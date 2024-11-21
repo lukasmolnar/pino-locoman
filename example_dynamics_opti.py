@@ -48,12 +48,13 @@ class OptimalControlProblem:
         self.model = model
         self.data = data
 
+        mass = self.data.mass[0]
         swing_ee_positions = {}
         for ee_id in swing_ee_ids:
             r_ee = self.data.oMf[ee_id].translation
             swing_ee_positions[ee_id] = r_ee
 
-        self.dyn = CentroidalDynamics(model, contact_ee_ids)
+        self.dyn = CentroidalDynamics(model, mass, contact_ee_ids)
 
         ndx = N_STATES - 1  # x includes quaternion, dx does not
         nf = 3 * len(contact_ee_ids)  # number of contact forces variables
@@ -62,7 +63,6 @@ class OptimalControlProblem:
 
         self.c_dxs = self.opti.variable(ndx, nodes + 1)  # state trajectory
         self.c_us = self.opti.variable(nu, nodes)  # control trajectory
-        self.c_dq_b = self.opti.variable(6, nodes + 1)  # base velocity
 
         # Objective function
         obj = 0
@@ -80,22 +80,20 @@ class OptimalControlProblem:
         self.opti.minimize(obj)
 
         for i in range(nodes):
-            # Dynamical constraints
+            # Gather all state and input info
             x = self.dyn.state_integrate()(x_nom, self.c_dxs[:, i])
-            x_next = self.dyn.state_integrate()(x_nom, self.c_dxs[:, i + 1])
-            x_next_dyn = self.dyn.centroidal_dynamics()(
-                x, self.c_us[:, i], self.c_dq_b[:, i]
-            )
-            gap = self.dyn.state_difference()(x_next, x_next_dyn)
-            self.opti.subject_to(gap == [0] * ndx)
-
-            # Base velocity
+            u = self.c_us[:, i]
             h = x[:6]
             q = x[6:]
-            dq_j = self.c_us[nf:, i]
+            dq_j = u[nf:]
             dq_b = self.dyn.get_base_velocity()(h, q, dq_j)
             dq = casadi.vertcat(dq_b, dq_j)
-            self.opti.subject_to(self.c_dq_b[:, i] == dq_b)
+
+            # Dynamics constraint
+            x_next = self.dyn.state_integrate()(x_nom, self.c_dxs[:, i + 1])
+            x_next_dyn = self.dyn.centroidal_dynamics()(x, u, dq_b)
+            gap = self.dyn.state_difference()(x_next, x_next_dyn)
+            self.opti.subject_to(gap == [0] * ndx)
 
             # Contact constraints
             for idx, frame_id in enumerate(contact_ee_ids):
@@ -164,14 +162,13 @@ class OptimalControlProblem:
         self.hs = []
         self.qs = []
         self.us = []
-        self.dq_bs = [] 
         self.gaps = []
 
         h_nom = np.array(x_nom)[:6]
         q_nom = np.array(x_nom)[6:]
 
-        for idx, (dx_sol, u_sol, dq_b_sol) in enumerate(
-            zip(self.sol.value(self.c_dxs).T, self.sol.value(self.c_us).T, self.sol.value(self.c_dq_b).T)
+        for _, (dx_sol, u_sol) in enumerate(
+            zip(self.sol.value(self.c_dxs).T, self.sol.value(self.c_us).T)
         ):
             dh = dx_sol[:6]
             dq = dx_sol[6:]
@@ -180,7 +177,6 @@ class OptimalControlProblem:
             self.hs.append(h)
             self.qs.append(q)
             self.us.append(u_sol)
-            self.dq_bs.append(dq_b_sol)
 
         q = pin.integrate(
             self.model, np.array(x_nom)[6:], self.sol.value(self.c_dxs).T[nodes, 6:]
@@ -190,29 +186,10 @@ class OptimalControlProblem:
     def _compute_gaps(self):
         # TODO
         return
-        # self.gaps = {"vector": [np.zeros(self.model.nv)], "norm": [0]}
-
-        # nq = self.model.nq
-
-        # for idx, (x, u) in enumerate(zip(self.xs, self.us)):
-        #     x_pin = self._simulate_step(x, u)
-
-        #     gap_q = pin.difference(self.model, x_pin[:nq], self.xs[idx + 1][:nq])
-        #     gap_v = self.xs[idx + 1][nq:] - x_pin[nq:]
-
-        #     gap = np.concatenate([gap_q, gap_v])
-        #     self.gaps["vector"].append(gap)
-        #     self.gaps["norm"].append(np.linalg.norm(gap))
 
     def _simulate_step(self, x, u):
         # TODO
         return
-        # h = x[:6]
-        # q = x[6:]
-        # dx = np.concatenate((np.zeros(6), u * dt))
-        # x_next = pin.integrate(self.model, x, dx)
-
-        # return x_next
 
 
 def main():
@@ -220,8 +197,7 @@ def main():
     model = robot.model
     data = robot.data
     q0 = model.referenceConfigurations[REFERENCE_POSE]
-    pin.forwardKinematics(model, data, q0)
-    pin.updateFramePlacements(model, data)
+    pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
     contact_ee_ids = [model.getFrameId(f) for f in contact_feet]
     swing_ee_ids = [model.getFrameId(f) for f in swing_feet]
@@ -232,14 +208,11 @@ def main():
     hs = np.vstack(oc_problem.hs)
     qs = np.vstack(oc_problem.qs)
     us = np.vstack(oc_problem.us)
-    dq_bs = np.vstack(oc_problem.dq_bs)
 
     print("Initial h: ", hs[0])
     print("Final h: ", hs[-1])
     print("Initial q: ", qs[0])
     print("Final q: ", qs[-1])
-    print("Initial dq_b: ", dq_bs[0])
-    print("Final dq_b: ", dq_bs[-1])
 
     # Visualize
     robot.initViewer()
@@ -251,21 +224,10 @@ def main():
             if DEBUG:
                 h = hs[k]
                 u = us[k]
-                dq_b = dq_bs[k]
-                dq = np.concatenate([dq_b, u[12:]]) 
-                pin.forwardKinematics(model, data, q, dq)
-                pin.computeCentroidalMomentum(model, data)
-                pin.updateFramePlacements(model, data)
-                v_foot = pin.getFrameVelocity(model, data, contact_ee_ids[0]).vector[:3]
-                r_ee = data.oMf[contact_ee_ids[0]].translation
                 print("k: ", k)
-                print("r_ee: ", r_ee)
-                print("com_true: ", data.com[0])
                 print("h: ", h)
-                print("h_true: ", data.hg.vector)
                 print("q: ", q)
                 print("u: ", u)
-                print("v_foot: ", v_foot)
 
             sleep(dt)
 

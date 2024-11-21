@@ -5,9 +5,10 @@ import casadi
 
 
 class CentroidalDynamics:
-    def __init__(self, model, contact_ee_ids):
+    def __init__(self, model, mass, contact_ee_ids):
         self.model = cpin.Model(model)
         self.data = self.model.createData()
+        self.mass = mass
         self.contact_ee_ids = contact_ee_ids
 
         self.nq = self.model.nq
@@ -63,7 +64,7 @@ class CentroidalDynamics:
         cpin.computeAllTerms(self.model, self.data, q, dq)
 
         # COM Dynamics
-        g = np.array([0, 0, -9.81 * self.data.mass[0]])
+        g = np.array([0, 0, -9.81 * self.mass])
         dp_com = sum(f_e) + g
         dl_com = casadi.SX.zeros(3)
         for idx, frame_id in enumerate(self.contact_ee_ids):
@@ -117,7 +118,7 @@ class CentroidalDynamics:
         dq = casadi.SX.sym("dq", self.nv)
 
         # TODO: Check Pinocchio terms
-        cpin.computeAllTerms(self.model, self.data, q, dq)
+        cpin.forwardKinematics(self.model, self.data, q, dq)
         vel = cpin.getFrameVelocity(self.model, self.data, frame_id, pin.LOCAL_WORLD_ALIGNED)
         vel_lin = vel.vector[:3]
 
