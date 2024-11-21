@@ -1,4 +1,5 @@
 import numpy as np
+import pinocchio as pin
 import pinocchio.casadi as cpin
 import casadi
 
@@ -66,7 +67,7 @@ class CentroidalDynamics:
         dp_com = sum(f_e) + g
         dl_com = casadi.SX.zeros(3)
         for idx, frame_id in enumerate(self.contact_ee_ids):
-            r_ee = self.data.oMf[frame_id].translation
+            r_ee = self.data.oMf[frame_id].translation # - self.data.com[0]
             dl_com += casadi.cross(r_ee, f_e[idx])
 
         h = casadi.vertcat(p_com, l_com)
@@ -117,7 +118,7 @@ class CentroidalDynamics:
 
         # TODO: Check Pinocchio terms
         cpin.computeAllTerms(self.model, self.data, q, dq)
-        vel = cpin.getFrameVelocity(self.model, self.data, frame_id)
+        vel = cpin.getFrameVelocity(self.model, self.data, frame_id, pin.LOCAL_WORLD_ALIGNED)
         vel_lin = vel.vector[:3]
 
         return casadi.Function("frame_vel", [q, dq], [vel_lin], ["q", "dq"], ["vel_lin"])

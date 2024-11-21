@@ -14,37 +14,22 @@ REFERENCE_POSE = "standing_with_arm_up"
 N_JOINTS = 19  # for now including gripper
 N_STATES = 13 + N_JOINTS  # 6 centroidal momentum + 7 floating base + joint positions
 N_INPUTS = 12 + N_JOINTS  # 4x3 end-effector forces + joint velocities
+N_DX = N_STATES - 1  # no quaternion
 
 DEBUG = False  # print info
 
 # Problem parameters
-x_goal = [
-    0, 0, 0, 0, 0, 0,
-    0, 0, 0.55, 0, 0, 0, 1,
-    0, 0.7, -1.5, 0, 0.7, -1.5,
-    0, 0.7, -1.5, 0, 0.7, -1.5,
-    0, 0.5, -0.5, 0, 0, 0, 0
-]
-x_init = [
-    0, 0, 0, 0, 0, 0,
-    0, 0, 0.55, 0, 0, 0, 1,
-    0, 0.7, -1.5, 0, 0.7, -1.5,
-    0, 0.7, -1.5, 0, 0.7, -1.5,
-    0, 0.26, -0.26, 0, 0, 0, 0
-]
-x_weights = [
-    0, 0, 0, 0, 0, 0,
-    100, 100, 100, 100, 100, 100,  # no quaternion
-    0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0,
-    1, 1, 1, 1, 1, 1, 1
-]
-Q = np.diag(x_weights)
 nodes = 20
 dt = 0.05
 
 contact_feet = ["FR_foot", "RL_foot"]
 swing_feet = ["FL_foot", "RR_foot"]
+
+# Goal com movement and selection matrix
+com_goal = np.array([10, 0, 0])  # x, y, yaw
+S_com = np.zeros((3, N_DX))
+for i, com in enumerate([0, 1, 5]):  # x, y, yaw indices
+    S_com[i, com] = 1
 
 # Nominal state (from which dx is integrated)
 x_nom = [
@@ -54,11 +39,7 @@ x_nom = [
     0, 0.7, -1.5, 0, 0.7, -1.5,
     0, 0.26, -0.26, 0, 0, 0, 0
 ]
-
-assert len(x_goal) == N_STATES
-assert len(x_init) == N_STATES
 assert len(x_nom) == N_STATES
-assert len(x_weights) == N_STATES - 1  # no quaternion
 
 
 class OptimalControlProblem:
@@ -86,17 +67,14 @@ class OptimalControlProblem:
         # Objective function
         obj = 0
 
-        # Interpolate between start and goal
-        x_interpol = np.linspace(x_init, x_goal, nodes + 1)
-
-        # State & Control regularization
+        # Tracking and regularization
         for i in range(nodes + 1):
-            x_i = self.dyn.state_integrate()(x_nom, self.c_dxs[:, i])
-            e_reg = self.dyn.state_difference()(x_interpol[i], x_i)
-            dq_b_i = self.c_dq_b[:, i]
+            dx = self.c_dxs[:, i]
+            err_joints = dx[12:]  # regularization
+            err_com = S_com @ dx - com_goal  # tracking
             obj += (
-                1e-1 * 0.5 * e_reg.T @ Q @ e_reg
-                # + 1e-5 * 0.5 * dq_b_i.T @ dq_b_i
+                1e-3 * 0.5 * err_joints.T @ err_joints
+                + 1 * 0.5 * err_com.T @ err_com
             )
 
         self.opti.minimize(obj)
@@ -137,21 +115,17 @@ class OptimalControlProblem:
             for frame_id, ee_pos in swing_ee_positions.items():
                 vel = self.dyn.get_frame_velocity(frame_id)(q, dq)
                 vel_des = swing_bezier_vel(ee_pos, dt * i, dt * nodes)
-                self.opti.subject_to(vel == vel_des)
+                self.opti.subject_to(vel[2] == vel_des[2])  # z velocity
 
         # State and input constraints
-        self.opti.subject_to(self.opti.bounded(-1, self.c_dxs, 1))
-        self.opti.subject_to(self.opti.bounded(-500, self.c_us[:nf, :], 500))
-        self.opti.subject_to(self.opti.bounded(-1, self.c_us[nf:, :], 1))
+        self.opti.subject_to(self.opti.bounded(-10, self.c_dxs[:6, :], 10))  # COM
+        self.opti.subject_to(self.opti.bounded(-1, self.c_dxs[6:, :], 1))  # q
+        self.opti.subject_to(self.opti.bounded(-500, self.c_us[:nf, :], 500))  # f_e
+        self.opti.subject_to(self.opti.bounded(-1, self.c_us[nf:, :], 1))  # dq_j
 
-        # Final constraint
-        # x_N = state_integrate()(x_nom, self.c_dxs[:, nodes])
-        # e_goal = state_difference()(x_N, x_goal)
-        # self.opti.subject_to(e_goal == [0] * ndx)
-
-        # Initial state
-        x_0 = self.dyn.state_integrate()(x_nom, self.c_dxs[:, 0])
-        self.opti.subject_to(self.dyn.state_difference()(x_0, x_init) == [0] * ndx)
+        # Initial state: nominal state
+        dx_0 = self.c_dxs[:, 0]
+        self.opti.subject_to(dx_0 == [0] * ndx)
 
         # Warm start
         self.opti.set_initial(
@@ -260,8 +234,12 @@ def main():
     us = np.vstack(oc_problem.us)
     dq_bs = np.vstack(oc_problem.dq_bs)
 
-    print("Initial state: ", qs[0])
-    print("Final state: ", qs[-1])
+    print("Initial h: ", hs[0])
+    print("Final h: ", hs[-1])
+    print("Initial q: ", qs[0])
+    print("Final q: ", qs[-1])
+    print("Initial dq_b: ", dq_bs[0])
+    print("Final dq_b: ", dq_bs[-1])
 
     # Visualize
     robot.initViewer()
