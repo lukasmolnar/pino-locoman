@@ -19,11 +19,9 @@ N_DX = N_STATES - 1  # no quaternion
 DEBUG = False  # print info
 
 # Problem parameters
-nodes = 20
+nodes = 30
 dt = 0.05
-
-contact_feet = ["FR_foot", "RL_foot"]
-swing_feet = ["FL_foot", "RR_foot"]
+gait_sequence = GaitSequence(gait="trot", nodes=nodes, dt=dt)
 
 # Goal com movement and selection matrix
 com_goal = np.array([10, 0, 0])  # x, y, yaw
@@ -43,21 +41,15 @@ assert len(x_nom) == N_STATES
 
 
 class OptimalControlProblem:
-    def __init__(self, model, data, contact_ee_ids, swing_ee_ids):
+    def __init__(self, model, data, gait_sequence):
         self.opti = casadi.Opti()
         self.model = model
         self.data = data
 
-        mass = self.data.mass[0]
-        swing_ee_positions = {}
-        for ee_id in swing_ee_ids:
-            r_ee = self.data.oMf[ee_id].translation
-            swing_ee_positions[ee_id] = r_ee
+        self.dyn = CentroidalDynamics(model, mass=self.data.mass[0])
 
-        self.dyn = CentroidalDynamics(model, mass, contact_ee_ids)
-
-        ndx = N_STATES - 1  # x includes quaternion, dx does not
-        nf = 3 * len(contact_ee_ids)  # number of contact forces variables
+        ndx = N_DX  # number of state variables (no quaternion)
+        nf = 3 * gait_sequence.n_contacts  # number of contact forces variables
         nu = nf + N_JOINTS  # total input variables
         mu = 0.5  # friction coefficient
 
@@ -80,6 +72,10 @@ class OptimalControlProblem:
         self.opti.minimize(obj)
 
         for i in range(nodes):
+            # Get end-effector frames
+            contact_ee_ids = [model.getFrameId(f) for f in gait_sequence.contact_list[i]]
+            swing_ee_ids = [model.getFrameId(f) for f in gait_sequence.swing_list[i]]
+
             # Gather all state and input info
             x = self.dyn.state_integrate()(x_nom, self.c_dxs[:, i])
             u = self.c_us[:, i]
@@ -91,7 +87,7 @@ class OptimalControlProblem:
 
             # Dynamics constraint
             x_next = self.dyn.state_integrate()(x_nom, self.c_dxs[:, i + 1])
-            x_next_dyn = self.dyn.centroidal_dynamics()(x, u, dq_b)
+            x_next_dyn = self.dyn.centroidal_dynamics(contact_ee_ids)(x, u, dq_b)
             gap = self.dyn.state_difference()(x_next, x_next_dyn)
             self.opti.subject_to(gap == [0] * ndx)
 
@@ -110,10 +106,11 @@ class OptimalControlProblem:
                 self.opti.subject_to(vel_lin == [0] * 3)
 
             # Swing foot trajectory
-            for frame_id, ee_pos in swing_ee_positions.items():
-                vel = self.dyn.get_frame_velocity(frame_id)(q, dq)
-                vel_des = swing_bezier_vel(ee_pos, dt * i, dt * nodes)
-                self.opti.subject_to(vel[2] == vel_des[2])  # z velocity
+            for frame_id in swing_ee_ids:
+                # Track bezier velocity (only in z)
+                vel_z = self.dyn.get_frame_velocity(frame_id)(q, dq)[2]
+                vel_z_des = gait_sequence.get_bezier_vel_z(0, i, h=0.1)
+                self.opti.subject_to(vel_z == vel_z_des)
 
         # State and input constraints
         self.opti.subject_to(self.opti.bounded(-10, self.c_dxs[:6, :], 10))  # COM
@@ -199,10 +196,7 @@ def main():
     q0 = model.referenceConfigurations[REFERENCE_POSE]
     pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
-    contact_ee_ids = [model.getFrameId(f) for f in contact_feet]
-    swing_ee_ids = [model.getFrameId(f) for f in swing_feet]
-
-    oc_problem = OptimalControlProblem(model, data, contact_ee_ids, swing_ee_ids)
+    oc_problem = OptimalControlProblem(model, data, gait_sequence)
     oc_problem.solve(approx_hessian=True)
 
     hs = np.vstack(oc_problem.hs)

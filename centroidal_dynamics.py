@@ -5,11 +5,10 @@ import casadi
 
 
 class CentroidalDynamics:
-    def __init__(self, model, mass, contact_ee_ids):
+    def __init__(self, model, mass):
         self.model = cpin.Model(model)
         self.data = self.model.createData()
         self.mass = mass
-        self.contact_ee_ids = contact_ee_ids
 
         self.nq = self.model.nq
         self.nv = self.model.nv
@@ -46,14 +45,14 @@ class CentroidalDynamics:
 
         return casadi.Function("difference", [x0, x1], [x_diff], ["x0", "x1"], ["x_diff"])
 
-    def centroidal_dynamics(self):
+    def centroidal_dynamics(self, contact_ee_ids):
         # States
         p_com = casadi.SX.sym("p_com", 3)  # COM linear momentum
         l_com = casadi.SX.sym("l_com", 3)  # COM angular momentum
         q = casadi.SX.sym("q", self.nq)  # generalized coordinates (base + joints)
 
         # Inputs
-        f_e = [casadi.SX.sym(f"f_e_{i}", 3) for i in range(len(self.contact_ee_ids))]  # end-effector forces
+        f_e = [casadi.SX.sym(f"f_e_{i}", 3) for i in range(len(contact_ee_ids))]  # end-effector forces
         dq_j = casadi.SX.sym("v", self.nj)  # joint velocities
 
         # Base velocity
@@ -67,7 +66,7 @@ class CentroidalDynamics:
         g = np.array([0, 0, -9.81 * self.mass])
         dp_com = sum(f_e) + g
         dl_com = casadi.SX.zeros(3)
-        for idx, frame_id in enumerate(self.contact_ee_ids):
+        for idx, frame_id in enumerate(contact_ee_ids):
             r_ee = self.data.oMf[frame_id].translation # - self.data.com[0]
             dl_com += casadi.cross(r_ee, f_e[idx])
 
