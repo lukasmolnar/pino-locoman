@@ -3,7 +3,7 @@ from time import sleep
 import numpy as np
 import pinocchio as pin
 
-from load import load
+from helpers import load
 
 URDF_PATH = "b2g_description/urdf/b2g.urdf"
 SRDF_PATH = "b2g_description/srdf/b2g.srdf"

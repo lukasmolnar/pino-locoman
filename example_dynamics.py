@@ -24,7 +24,7 @@ dt = 0.05
 gait_sequence = GaitSequence(gait="trot", nodes=nodes, dt=dt)
 
 # Goal com movement and selection matrix
-com_goal = np.array([10, 0, 0])  # x, y, yaw
+com_goal = np.array([20, 0, 0])  # x, y, yaw
 S_com = np.zeros((3, N_DX))
 for i, com in enumerate([0, 1, 5]):  # x, y, yaw indices
     S_com[i, com] = 1
@@ -113,7 +113,7 @@ class OptimalControlProblem:
                 self.opti.subject_to(vel_z == vel_z_des)
 
         # State and input constraints
-        self.opti.subject_to(self.opti.bounded(-10, self.c_dxs[:6, :], 10))  # COM
+        self.opti.subject_to(self.opti.bounded(-50, self.c_dxs[:6, :], 50))  # COM
         self.opti.subject_to(self.opti.bounded(-1, self.c_dxs[6:, :], 1))  # q
         self.opti.subject_to(self.opti.bounded(-500, self.c_us[:nf, :], 500))  # f_e
         self.opti.subject_to(self.opti.bounded(-1, self.c_us[nf:, :], 1))  # dq_j

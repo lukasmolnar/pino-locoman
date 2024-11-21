@@ -133,7 +133,7 @@ class CentroidalDynamics:
 
         return casadi.Function("centroidal_momentum", [q, dq], [h], ["q", "dq"], ["h"])
 
-    def compute_Ab_inv(Ab):
+    def compute_Ab_inv(self, Ab):
         # NOTE: This is the OCS2 implementation
         mass = Ab[0, 0]
         Ab_22_inv = casadi.inv(Ab[3:, 3:])
