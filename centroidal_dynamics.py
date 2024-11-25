@@ -5,15 +5,15 @@ import casadi
 
 
 class CentroidalDynamics:
-    def __init__(self, model, mass):
+    def __init__(self, model, mass, dt):
         self.model = cpin.Model(model)
         self.data = self.model.createData()
         self.mass = mass
 
         self.nq = self.model.nq
         self.nv = self.model.nv
-        self.nj = 19
-        self.dt = 0.02
+        self.nj = self.nq - 7  # without base position and quaternion
+        self.dt = dt
 
     def state_integrate(self):
         x = casadi.SX.sym("x", 6 + self.nq)
