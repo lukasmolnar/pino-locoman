@@ -9,26 +9,24 @@ from centroidal_dynamics import CentroidalDynamics
 class OptimalControlProblem:
     def __init__(
             self,
-            model,
-            data,
+            robot_class,
             gait_sequence,
             com_goal,
-            x_nom,
             mu=0.5,
         ):
         self.opti = casadi.Opti()
-        self.model = model
-        self.data = data
-        self.x_nom = x_nom
+        self.model = robot_class.model
+        self.data = robot_class.data
+        self.x_nom = robot_class.x_nom
         self.nodes = gait_sequence.nodes
 
-        ndx = len(x_nom) - 1  # exclude quaternion
+        ndx = len(self.x_nom) - 1  # exclude quaternion
         nf = 3 * gait_sequence.n_contacts  # contact forces
         nj = ndx - 12  # joints (excluding COM and base)
         nu = nf + nj  # total inputs
 
         self.dyn = CentroidalDynamics(
-            model=model,
+            model=self.model,
             mass=self.data.mass[0],
             dt=gait_sequence.dt
         )
@@ -59,11 +57,11 @@ class OptimalControlProblem:
 
         for i in range(self.nodes):
             # Get end-effector frames
-            contact_ee_ids = [model.getFrameId(f) for f in gait_sequence.contact_list[i]]
-            swing_ee_ids = [model.getFrameId(f) for f in gait_sequence.swing_list[i]]
+            contact_ee_ids = [self.model.getFrameId(f) for f in gait_sequence.contact_list[i]]
+            swing_ee_ids = [self.model.getFrameId(f) for f in gait_sequence.swing_list[i]]
 
             # Gather all state and input info
-            x = self.dyn.state_integrate()(x_nom, self.c_dxs[:, i])
+            x = self.dyn.state_integrate()(self.x_nom, self.c_dxs[:, i])
             u = self.c_us[:, i]
             h = x[:6]
             q = x[6:]
@@ -72,7 +70,7 @@ class OptimalControlProblem:
             dq = casadi.vertcat(dq_b, dq_j)
 
             # Dynamics constraint
-            x_next = self.dyn.state_integrate()(x_nom, self.c_dxs[:, i + 1])
+            x_next = self.dyn.state_integrate()(self.x_nom, self.c_dxs[:, i + 1])
             x_next_dyn = self.dyn.centroidal_dynamics(contact_ee_ids)(x, u, dq_b)
             gap = self.dyn.state_difference()(x_next, x_next_dyn)
             self.opti.subject_to(gap == [0] * ndx)

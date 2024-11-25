@@ -1,17 +1,47 @@
 from os.path import dirname, abspath
 
-import numpy as np
 import pinocchio as pin
 from pinocchio.robot_wrapper import RobotWrapper
 
-def load(urdf_path, srdf_path=None):
-    urdf_dir = dirname(abspath(urdf_path))
-    robot = RobotWrapper.BuildFromURDF(urdf_path, [urdf_dir], pin.JointModelFreeFlyer())
-    if srdf_path:
-        pin.loadReferenceConfigurations(robot.model, srdf_path)
-        q0 = pin.neutral(robot.model)
-        robot.q0 = pin.normalize(robot.model, q0)
-    return robot
+
+class Robot:
+    def __init__(self, urdf_path, srdf_path, reference_pose):
+        urdf_dir = dirname(abspath(urdf_path))
+        self.robot = RobotWrapper.BuildFromURDF(urdf_path, [urdf_dir], pin.JointModelFreeFlyer())
+        self.model = self.robot.model
+        self.data = self.robot.data
+        if srdf_path and reference_pose:
+            pin.loadReferenceConfigurations(self.model, srdf_path)
+            self.q0 = self.model.referenceConfigurations[reference_pose]
+
+class B2(Robot):
+    def __init__(self):
+        urdf_path = "b2_description/urdf/b2.urdf"
+        srdf_path = "b2_description/srdf/b2.srdf"
+        reference_pose = "standing"
+        super().__init__(urdf_path, srdf_path, reference_pose)
+
+        self.x_nom = [
+            0, 0, 0, 0, 0, 0,            # centroidal momentum
+            0, 0, 0.55, 0, 0, 0, 1,      # base position and quaternion
+            0, 0.7, -1.5, 0, 0.7, -1.5,  # FL, FR joints
+            0, 0.7, -1.5, 0, 0.7, -1.5,  # RL, RR joints
+        ]
+
+class B2G(Robot):
+    def __init__(self):
+        urdf_path = "b2g_description/urdf/b2g.urdf"
+        srdf_path = "b2g_description/srdf/b2g.srdf"
+        reference_pose = "standing_with_arm_home"
+        super().__init__(urdf_path, srdf_path, reference_pose)
+
+        self.x_nom = [
+            0, 0, 0, 0, 0, 0,            # centroidal momentum
+            0, 0, 0.55, 0, 0, 0, 1,      # base position and quaternion
+            0, 0.7, -1.5, 0, 0.7, -1.5,  # FL, FR joints
+            0, 0.7, -1.5, 0, 0.7, -1.5,  # RL, RR joints
+            0, 0.26, -0.26, 0, 0, 0, 0   # arm joints
+        ]
 
 
 class GaitSequence:

@@ -6,43 +6,29 @@ import pinocchio as pin
 from helpers import *
 from optimal_control_problem import OptimalControlProblem
 
-URDF_PATH = "b2g_description/urdf/b2g.urdf"
-SRDF_PATH = "b2g_description/srdf/b2g.srdf"
-REFERENCE_POSE = "standing_with_arm_up"
-
-DEBUG = False  # print info
-
 # Problem parameters
+robot_class = B2G()
 nodes = 30
 dt = 0.05
 gait_sequence = GaitSequence(gait="trot", nodes=nodes, dt=dt)
 com_goal = np.array([10, 0, 0])  # x, y, yaw
 
-# Nominal state (from which dx is integrated)
-x_nom = [
-    0, 0, 0, 0, 0, 0,
-    0, 0, 0.55, 0, 0, 0, 1,
-    0, 0.7, -1.5, 0, 0.7, -1.5,
-    0, 0.7, -1.5, 0, 0.7, -1.5,
-    0, 0.26, -0.26, 0, 0, 0, 0
-]
+debug = False  # print info
 
 
 def main():
-    robot = load(URDF_PATH, SRDF_PATH)
-    model = robot.model
-    data = robot.data
+    robot = robot_class.robot
+    model = robot_class.model
+    data = robot_class.data
+    q0 = robot_class.q0
     print(model)
 
-    q0 = model.referenceConfigurations[REFERENCE_POSE]
     pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
     oc_problem = OptimalControlProblem(
-        model=model,
-        data=data,
+        robot_class=robot_class,
         gait_sequence=gait_sequence,
         com_goal=com_goal,
-        x_nom=x_nom,
     )
     oc_problem.solve(approx_hessian=True)
 
@@ -62,7 +48,7 @@ def main():
         for k in range(nodes):
             q = qs[k]
             robot.display(q)
-            if DEBUG:
+            if debug:
                 h = hs[k]
                 u = us[k]
                 print("k: ", k)
