@@ -7,13 +7,15 @@ from helpers import *
 from optimal_control_problem import OptimalControlProblem
 
 # Problem parameters
-robot_class = B2G()
+robot_class = B2()
 nodes = 30
 dt = 0.05
-gait_sequence = GaitSequence(gait="trot", nodes=nodes, dt=dt)
-com_goal = np.array([10, 0, 0])  # x, y, yaw
+robot_class.set_gait_sequence(gait="trot", nodes=nodes, dt=dt)
 
-debug = False  # print info
+# Tracking goal: x, y, yaw
+com_goal = np.array([0, 0, 0])
+
+debug = True  # print info
 
 
 def main():
@@ -27,7 +29,6 @@ def main():
 
     oc_problem = OptimalControlProblem(
         robot_class=robot_class,
-        gait_sequence=gait_sequence,
         com_goal=com_goal,
     )
     oc_problem.solve(approx_hessian=True)
@@ -51,10 +52,12 @@ def main():
             if debug:
                 h = hs[k]
                 u = us[k]
+                pin.computeAllTerms(model, data, q, np.zeros(model.nv))
                 print("k: ", k)
                 print("h: ", h)
                 print("q: ", q)
                 print("u: ", u)
+                print("com: ", data.com[0])
 
             sleep(dt)
 
