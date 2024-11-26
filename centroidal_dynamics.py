@@ -53,29 +53,31 @@ class CentroidalDynamics:
 
         # Inputs
         f_e = [casadi.SX.sym(f"f_e_{i}", 3) for i in range(len(contact_ee_ids))]  # end-effector forces
-        dq_j = casadi.SX.sym("v", self.nj)  # joint velocities
+        dq_j = casadi.SX.sym("dq_j", self.nj)  # joint velocities
 
         # Base velocity
         dq_b = casadi.SX.sym("dq_b", 6)
         dq = casadi.vertcat(dq_b, dq_j)
 
         # TODO: Check Pinocchio terms
-        cpin.computeAllTerms(self.model, self.data, q, dq)
+        cpin.forwardKinematics(self.model, self.data, q)
+        cpin.centerOfMass(self.model, self.data)
+        cpin.updateFramePlacements(self.model, self.data)
 
         # COM Dynamics
         g = np.array([0, 0, -9.81 * self.mass])
         dp_com = sum(f_e) + g
         dl_com = casadi.SX.zeros(3)
         for idx, frame_id in enumerate(contact_ee_ids):
-            r_ee = self.data.oMf[frame_id].translation # - self.data.com[0]
+            r_ee = self.data.oMf[frame_id].translation - self.data.com[0]
             dl_com += casadi.cross(r_ee, f_e[idx])
 
         h = casadi.vertcat(p_com, l_com)
-        dh = casadi.vertcat(dp_com, dl_com)
+        dh = casadi.vertcat(dp_com, dl_com) / self.mass # scale by mass
 
         # Stack states and inputs
         x = casadi.vertcat(h, q)
-        dx = casadi.vertcat(dh, dq_b, dq_j)
+        dx = casadi.vertcat(dh, dq)
         u = casadi.SX.sym("u", 0)
         for f in f_e:
             u = casadi.vertcat(u, f)
@@ -97,9 +99,8 @@ class CentroidalDynamics:
         A = self.data.Ag
         Ab = A[:, :6]
         Aj = A[:, 6:]
-        Ab_inv = casadi.inv(Ab + 1e-8 * casadi.SX.eye(6))
-        # Ab_inv = self.compute_Ab_inv(Ab)
-        dq_b = Ab_inv @ (h - Aj @ dq_j)
+        Ab_inv = self.compute_Ab_inv(Ab)
+        dq_b = Ab_inv @ (h * self.mass - Aj @ dq_j)  # scale by mass
 
         return casadi.Function("base_vel", [h, q, dq_j], [dq_b], ["h", "q", "dq_j"], ["dq_b"])
 

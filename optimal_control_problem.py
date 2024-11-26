@@ -10,31 +10,39 @@ class OptimalControlProblem:
     def __init__(
             self,
             robot_class,
-            gait_sequence,
             com_goal,
-            mu=0.5,
+            mu=0.7,
         ):
         self.opti = casadi.Opti()
         self.model = robot_class.model
         self.data = robot_class.data
         self.x_nom = robot_class.x_nom
-        self.nodes = gait_sequence.nodes
+
+        self.gait_sequence = robot_class.gait_sequence
+        self.nodes = self.gait_sequence.nodes
+        Q = robot_class.Q
+        R = robot_class.R
+
+        mass = self.data.mass[0]
+        dt = self.gait_sequence.dt
+        self.dyn = CentroidalDynamics(self.model, mass, dt)
+
+        n_contacts = self.gait_sequence.n_contacts
+        n_forces = 3 * n_contacts
+        n_joints = self.model.nv - 6
 
         ndx = len(self.x_nom) - 1  # exclude quaternion
-        nf = 3 * gait_sequence.n_contacts  # contact forces
-        nj = ndx - 12  # joints (excluding COM and base)
-        nu = nf + nj  # total inputs
-
-        self.dyn = CentroidalDynamics(
-            model=self.model,
-            mass=self.data.mass[0],
-            dt=gait_sequence.dt
-        )
+        nu = n_forces + n_joints
 
         # COM selection matrix for tracking
         S_com = np.zeros((3, ndx))
         for i, com in enumerate([0, 1, 5]):  # x, y, yaw indices
             S_com[i, com] = 1
+
+        # Desired state and input
+        dx_des = np.zeros(ndx)
+        f_des = np.tile([0, 0, 9.81 * mass / n_contacts], n_contacts)
+        u_des = np.concatenate((f_des, np.zeros(n_joints)))
 
         # Decision variables
         self.c_dxs = self.opti.variable(ndx, self.nodes + 1)  # state trajectory
@@ -44,28 +52,40 @@ class OptimalControlProblem:
         obj = 0
 
         # Tracking and regularization
-        for i in range(self.nodes + 1):
+        for i in range(self.nodes):
             dx = self.c_dxs[:, i]
-            err_joints = dx[12:]  # regularization
-            err_com = S_com @ dx - com_goal  # tracking
-            obj += (
-                1e-3 * 0.5 * err_joints.T @ err_joints
-                + 1 * 0.5 * err_com.T @ err_com
+            u = self.c_us[:, i]
+            err_com = S_com @ dx - com_goal
+            err_dx = dx - dx_des
+            err_u = u - u_des
+            obj += 0.5 * (
+                err_com.T @ err_com
+                + err_dx.T @ Q @ err_dx
+                + err_u.T @ R @ err_u
             )
+        
+        # Final state
+        dx = self.c_dxs[:, self.nodes]
+        err_com = S_com @ dx - com_goal
+        err_dx = dx - dx_des
+        obj += 0.5 * (
+            err_com.T @ err_com
+            + dx.T @ Q @ dx
+        )
 
         self.opti.minimize(obj)
 
         for i in range(self.nodes):
             # Get end-effector frames
-            contact_ee_ids = [self.model.getFrameId(f) for f in gait_sequence.contact_list[i]]
-            swing_ee_ids = [self.model.getFrameId(f) for f in gait_sequence.swing_list[i]]
+            contact_ee_ids = [self.model.getFrameId(f) for f in self.gait_sequence.contact_list[i]]
+            swing_ee_ids = [self.model.getFrameId(f) for f in self.gait_sequence.swing_list[i]]
 
             # Gather all state and input info
             x = self.dyn.state_integrate()(self.x_nom, self.c_dxs[:, i])
             u = self.c_us[:, i]
             h = x[:6]
             q = x[6:]
-            dq_j = u[nf:]
+            dq_j = u[n_forces:]
             dq_b = self.dyn.get_base_velocity()(h, q, dq_j)
             dq = casadi.vertcat(dq_b, dq_j)
 
@@ -93,14 +113,14 @@ class OptimalControlProblem:
             for frame_id in swing_ee_ids:
                 # Track bezier velocity (only in z)
                 vel_z = self.dyn.get_frame_velocity(frame_id)(q, dq)[2]
-                vel_z_des = gait_sequence.get_bezier_vel_z(0, i, h=0.1)
+                vel_z_des = self.gait_sequence.get_bezier_vel_z(0, i, h=0.1)
                 self.opti.subject_to(vel_z == vel_z_des)
 
         # State and input constraints
-        self.opti.subject_to(self.opti.bounded(-50, self.c_dxs[:6, :], 50))  # COM
-        self.opti.subject_to(self.opti.bounded(-2, self.c_dxs[6:, :], 2))  # q
-        self.opti.subject_to(self.opti.bounded(-500, self.c_us[:nf, :], 500))  # f_e
-        self.opti.subject_to(self.opti.bounded(-1, self.c_us[nf:, :], 1))  # dq_j
+        self.opti.subject_to(self.opti.bounded(-10, self.c_dxs[:6, :], 10))  # COM
+        self.opti.subject_to(self.opti.bounded(-1, self.c_dxs[6:, :], 1))  # q
+        self.opti.subject_to(self.opti.bounded(-500, self.c_us[:n_forces, :], 500))  # f_e
+        self.opti.subject_to(self.opti.bounded(-1, self.c_us[n_forces:, :], 1))  # dq_j
 
         # Initial state: nominal state
         dx_0 = self.c_dxs[:, 0]
@@ -108,10 +128,10 @@ class OptimalControlProblem:
 
         # Warm start
         self.opti.set_initial(
-            self.c_dxs, np.vstack([np.zeros(ndx) for _ in range(self.nodes + 1)]).T
+            self.c_dxs, np.vstack([dx_des for _ in range(self.nodes + 1)]).T
         )
         self.opti.set_initial(
-            self.c_us, np.vstack([np.zeros(nu) for _ in range(self.nodes)]).T
+            self.c_us, np.vstack([u_des for _ in range(self.nodes)]).T
         )
 
     def solve(self, approx_hessian=True):
