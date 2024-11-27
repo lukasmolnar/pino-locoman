@@ -1,0 +1,3 @@
+# Solver files
+*.mtx
+*.casadi

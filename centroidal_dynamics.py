@@ -12,7 +12,7 @@ class CentroidalDynamics:
 
         self.nq = self.model.nq
         self.nv = self.model.nv
-        self.nj = self.nq - 7  # without base position and quaternion
+        self.nj = self.nq - 6  # without base position and rotation
         self.dt = dt
 
     def state_integrate(self):
@@ -83,7 +83,8 @@ class CentroidalDynamics:
             u = casadi.vertcat(u, f)
         u = casadi.vertcat(u, dq_j)
 
-        x_next = self.state_integrate()(x, dx * self.dt)
+        # NOTE: This requires no quaternion
+        x_next = x + dx * self.dt
 
         return casadi.Function("int_dyn", [x, u, dq_b], [x_next], ["x", "u", "dq_b"], ["x_next"])
 
@@ -99,6 +100,7 @@ class CentroidalDynamics:
         A = self.data.Ag
         Ab = A[:, :6]
         Aj = A[:, 6:]
+        # Ab_inv = casadi.inv(Ab + 1e-6 * casadi.SX.eye(6))
         Ab_inv = self.compute_Ab_inv(Ab)
         dq_b = Ab_inv @ (h * self.mass - Aj @ dq_j)  # scale by mass
 

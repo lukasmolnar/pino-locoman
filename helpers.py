@@ -7,9 +7,15 @@ from pinocchio.robot_wrapper import RobotWrapper
 
 
 class Robot:
-    def __init__(self, urdf_path, srdf_path, reference_pose):
+    def __init__(self, urdf_path, srdf_path, reference_pose, use_quaternion=False):
         urdf_dir = dirname(abspath(urdf_path))
-        self.robot = RobotWrapper.BuildFromURDF(urdf_path, [urdf_dir], pin.JointModelFreeFlyer())
+        if use_quaternion:
+            joint_model = pin.JointModelFreeFlyer()
+        else:
+            joint_model = pin.JointModelComposite()
+            joint_model.addJoint(pin.JointModelTranslation())
+            joint_model.addJoint(pin.JointModelSphericalZYX())
+        self.robot = RobotWrapper.BuildFromURDF(urdf_path, [urdf_dir], joint_model)
         self.model = self.robot.model
         self.data = self.robot.data
         if srdf_path and reference_pose:
@@ -18,7 +24,7 @@ class Robot:
 
         self.nq = self.model.nq
         self.nv = self.model.nv
-        self.nj = self.nq - 7  # without base position and quaternion
+        self.nj = self.nq - 6  # without base position and rotation
 
         self.Q_weights = {
             "scaling": 1e0,
@@ -59,7 +65,7 @@ class B2(Robot):
 
         self.x_nom = np.array([
             0, 0, 0, 0, 0, 0,            # centroidal momentum
-            0, 0, 0.55, 0, 0, 0, 1,      # base position and quaternion
+            0, 0, 0.55, 0, 0, 0, # 1,      # base position and quaternion
             0, 0.7, -1.5, 0, 0.7, -1.5,  # FL, FR joints
             0, 0.7, -1.5, 0, 0.7, -1.5,  # RL, RR joints
         ])
@@ -74,7 +80,7 @@ class B2G(Robot):
 
         self.x_nom = np.array([
             0, 0, 0, 0, 0, 0,            # centroidal momentum
-            0, 0, 0.55, 0, 0, 0, 1,      # base position and quaternion
+            0, 0, 0.55, 0, 0, 0, # 1,      # base position and quaternion
             0, 0.7, -1.5, 0, 0.7, -1.5,  # FL, FR joints
             0, 0.7, -1.5, 0, 0.7, -1.5,  # RL, RR joints
             0, 0.26, -0.26, 0, 0, 0, 0   # arm joints

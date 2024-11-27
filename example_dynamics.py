@@ -15,7 +15,7 @@ robot_class.set_gait_sequence(gait="trot", nodes=nodes, dt=dt)
 # Tracking goal: x, y, yaw
 com_goal = np.array([0, 0, 0])
 
-debug = True  # print info
+debug = False  # print info
 
 
 def main():
@@ -24,6 +24,7 @@ def main():
     data = robot_class.data
     q0 = robot_class.q0
     print(model)
+    print(q0)
 
     pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
@@ -31,7 +32,7 @@ def main():
         robot_class=robot_class,
         com_goal=com_goal,
     )
-    oc_problem.solve(approx_hessian=True)
+    oc_problem.solve(solver="fatrop", approx_hessian=True)
 
     hs = np.vstack(oc_problem.hs)
     qs = np.vstack(oc_problem.qs)
