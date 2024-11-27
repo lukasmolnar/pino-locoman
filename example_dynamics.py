@@ -8,12 +8,12 @@ from optimal_control_problem import OptimalControlProblem
 
 # Problem parameters
 robot_class = B2()
-nodes = 30
-dt = 0.05
+nodes = 40
+dt = 0.02
 robot_class.set_gait_sequence(gait="trot", nodes=nodes, dt=dt)
 
-# Tracking goal: x, y, yaw
-com_goal = np.array([0, 0, 0])
+# Tracking goal: linear and angular momentum
+com_goal = np.array([1, 0, 0, 0, 0, 0])
 
 debug = False  # print info
 

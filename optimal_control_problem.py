@@ -1,6 +1,4 @@
 import numpy as np
-import pinocchio as pin
-import pinocchio.casadi as cpin
 import casadi
 
 from helpers import *
@@ -35,13 +33,9 @@ class OptimalControlProblem:
         ndx = len(self.x_nom)  # same size!
         nu = n_forces + n_joints
 
-        # COM selection matrix for tracking
-        S_com = np.zeros((3, ndx))
-        for i, com in enumerate([0, 1, 5]):  # x, y, yaw indices
-            S_com[i, com] = 1
-
         # Desired state and input
         dx_des = np.zeros(ndx)
+        dx_des[:6] = com_goal
         f_des = np.tile([0, 0, 9.81 * mass / n_contacts], n_contacts)
         u_des = np.concatenate((f_des, np.zeros(n_joints)))
 
@@ -60,23 +54,15 @@ class OptimalControlProblem:
         for i in range(self.nodes):
             dx = self.DX[i]
             u = self.U[i]
-            err_com = S_com @ dx - com_goal
             err_dx = dx - dx_des
             err_u = u - u_des
-            obj += 0.5 * (
-                err_com.T @ err_com
-                + err_dx.T @ Q @ err_dx
-                + err_u.T @ R @ err_u
-            )
+            obj += 0.5 * err_dx.T @ Q @ err_dx
+            obj += 0.5 * err_u.T @ R @ err_u
         
         # Final state
         dx = self.DX[self.nodes]
-        err_com = S_com @ dx - com_goal
         err_dx = dx - dx_des
-        obj += 0.5 * (
-            err_com.T @ err_com
-            + dx.T @ Q @ dx
-        )
+        obj += 0.5 * dx.T @ Q @ dx
 
         self.opti.minimize(obj)
 
