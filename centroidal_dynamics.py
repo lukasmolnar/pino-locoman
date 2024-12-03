@@ -5,17 +5,19 @@ import casadi
 
 
 class CentroidalDynamics:
-    def __init__(self, model, mass, dt):
+    def __init__(self, model, mass):
         self.model = cpin.Model(model)
         self.data = self.model.createData()
         self.mass = mass
 
         self.nq = self.model.nq
         self.nv = self.model.nv
-        self.nj = self.nq - 6  # without base position and rotation
-        self.dt = dt
+        self.nj = self.nq - 7  # without base position and quaternion
 
-    def state_integrate(self):
+        self.quat_nom = casadi.SX([0, 0, 0, 1])
+        self.SO3 = cpin.liegroups.SO3()
+
+    def state_integrate(self, use_quat_nom=False):
         x = casadi.SX.sym("x", 6 + self.nq)
         dx = casadi.SX.sym("dx", 6 + self.nv)
 
@@ -24,35 +26,38 @@ class CentroidalDynamics:
         dh = dx[:6]
         dq = dx[6:]
 
+        if use_quat_nom:
+            qb_pos = q[:3]
+            dqb_pos = dq[:3]
+            qb_quat = q[3:7]
+            dqb_quat = dq[3:6]
+            qj = q[7:]
+            dqj = dq[6:]
+
+            qb_next_pos = qb_pos + dqb_pos
+            qb_next_quat = self.SO3.integrate(self.quat_nom, dqb_quat)
+            qj_next = qj + dqj
+            q_next = casadi.vertcat(qb_next_pos, qb_next_quat, qj_next)
+
+        else:
+            q_next = cpin.integrate(self.model, q, dq)
+
         h_next = h + dh
-        q_next = cpin.integrate(self.model, q, dq)
         x_next = casadi.vertcat(h_next, q_next)
 
         return casadi.Function("integrate", [x, dx], [x_next], ["x", "dx"], ["x_next"])
 
-    def state_difference(self):
-        x0 = casadi.SX.sym("x0", 6 + self.nq)
-        x1 = casadi.SX.sym("x1", 6 + self.nq)
-
-        h0 = x0[:6]
-        q0 = x0[6:]
-        h1 = x1[:6]
-        q1 = x1[6:]
-
-        h_diff = h1 - h0
-        q_diff = cpin.difference(self.model, q0, q1)
-        x_diff = casadi.vertcat(h_diff, q_diff)
-
-        return casadi.Function("difference", [x0, x1], [x_diff], ["x0", "x1"], ["x_diff"])
-
-    def centroidal_dynamics(self, contact_ee_ids):
+    def centroidal_dynamics(self, contact_ee_ids, arm_ee_id=None):
         # States
         p_com = casadi.SX.sym("p_com", 3)  # COM linear momentum
         l_com = casadi.SX.sym("l_com", 3)  # COM angular momentum
         q = casadi.SX.sym("q", self.nq)  # generalized coordinates (base + joints)
 
         # Inputs
-        f_e = [casadi.SX.sym(f"f_e_{i}", 3) for i in range(len(contact_ee_ids))]  # end-effector forces
+        nf = len(contact_ee_ids)
+        if arm_ee_id:
+            nf += 1
+        f_e = [casadi.SX.sym(f"f_e_{i}", 3) for i in range(nf)]  # end-effector forces
         dq_j = casadi.SX.sym("dq_j", self.nj)  # joint velocities
 
         # Base velocity
@@ -71,22 +76,24 @@ class CentroidalDynamics:
         for idx, frame_id in enumerate(contact_ee_ids):
             r_ee = self.data.oMf[frame_id].translation - self.data.com[0]
             dl_com += casadi.cross(r_ee, f_e[idx])
+        if arm_ee_id:
+            r_ee = self.data.oMf[arm_ee_id].translation - self.data.com[0]
+            dl_com += casadi.cross(r_ee, f_e[-1])
 
         h = casadi.vertcat(p_com, l_com)
         dh = casadi.vertcat(dp_com, dl_com) / self.mass # scale by mass
 
         # Stack states and inputs
         x = casadi.vertcat(h, q)
-        dx = casadi.vertcat(dh, dq)
         u = casadi.SX.sym("u", 0)
         for f in f_e:
             u = casadi.vertcat(u, f)
         u = casadi.vertcat(u, dq_j)
 
-        # NOTE: This requires no quaternion
-        x_next = x + dx * self.dt
+        # Return dynamics: dx = f(x, u)
+        dx = casadi.vertcat(dh, dq)
 
-        return casadi.Function("int_dyn", [x, u, dq_b], [x_next], ["x", "u", "dq_b"], ["x_next"])
+        return casadi.Function("int_dyn", [x, u, dq_b], [dx], ["x", "u", "dq_b"], ["dx"])
 
     def get_base_velocity(self):
         h = casadi.SX.sym("h", 6)
@@ -121,10 +128,10 @@ class CentroidalDynamics:
 
         # TODO: Check Pinocchio terms
         cpin.forwardKinematics(self.model, self.data, q, dq)
-        vel = cpin.getFrameVelocity(self.model, self.data, frame_id, pin.LOCAL_WORLD_ALIGNED)
-        vel_lin = vel.vector[:3]
+        ref = pin.LOCAL_WORLD_ALIGNED
+        vel = cpin.getFrameVelocity(self.model, self.data, frame_id, ref).vector
 
-        return casadi.Function("frame_vel", [q, dq], [vel_lin], ["q", "dq"], ["vel_lin"])
+        return casadi.Function("frame_vel", [q, dq], [vel], ["q", "dq"], ["vel"])
 
     def get_centroidal_momentum(self):
         q = casadi.SX.sym("q", self.nq)

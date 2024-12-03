@@ -19,25 +19,29 @@ class OptimalControlProblem:
 
         self.gait_sequence = robot_class.gait_sequence
         self.nodes = self.gait_sequence.nodes
-        Q = robot_class.Q
-        R = robot_class.R
+        self.dt = self.gait_sequence.dt
+        self.Q = robot_class.Q
+        self.R = robot_class.R
 
         mass = self.data.mass[0]
-        dt = self.gait_sequence.dt
-        self.dyn = CentroidalDynamics(self.model, mass, dt)
+        self.dyn = CentroidalDynamics(self.model, mass)
 
-        n_contacts = self.gait_sequence.n_contacts
-        n_forces = 3 * n_contacts
-        n_joints = self.model.nv - 6
+        n_contact_feet = self.gait_sequence.n_contacts
+        nf = robot_class.nf
+        nj = robot_class.nj
+        nv = robot_class.nv
 
-        ndx = len(self.x_nom)  # same size!
-        nu = n_forces + n_joints
+        # State and input dimensions
+        ndx = 6 + nv  # COM + generalized velocities
+        nu = nf + nj  # forces + joint velocities
 
         # Desired state and input
         dx_des = np.zeros(ndx)
         dx_des[:6] = com_goal
-        f_des = np.tile([0, 0, 9.81 * mass / n_contacts], n_contacts)
-        u_des = np.concatenate((f_des, np.zeros(n_joints)))
+        f_des = np.tile([0, 0, 9.81 * mass / n_contact_feet], n_contact_feet)
+        if robot_class.arm_ee:
+            f_des = np.concatenate((f_des, robot_class.arm_f_des))
+        u_des = np.concatenate((f_des, np.zeros(nj)))
 
         # Decision variables
         self.DX = []
@@ -56,13 +60,13 @@ class OptimalControlProblem:
             u = self.U[i]
             err_dx = dx - dx_des
             err_u = u - u_des
-            obj += 0.5 * err_dx.T @ Q @ err_dx
-            obj += 0.5 * err_u.T @ R @ err_u
+            obj += 0.5 * err_dx.T @ self.Q @ err_dx
+            obj += 0.5 * err_u.T @ self.R @ err_u
         
         # Final state
         dx = self.DX[self.nodes]
         err_dx = dx - dx_des
-        obj += 0.5 * dx.T @ Q @ dx
+        obj += 0.5 * dx.T @ self.Q @ dx
 
         self.opti.minimize(obj)
 
@@ -73,21 +77,26 @@ class OptimalControlProblem:
             # Get end-effector frames
             contact_ee_ids = [self.model.getFrameId(f) for f in self.gait_sequence.contact_list[i]]
             swing_ee_ids = [self.model.getFrameId(f) for f in self.gait_sequence.swing_list[i]]
+            if robot_class.arm_ee:
+                arm_ee_id = self.model.getFrameId(robot_class.arm_ee)
+            else:
+                arm_ee_id = None
 
             # Gather all state and input info
-            x = self.x_nom + self.DX[i]
+            dx = self.DX[i]
+            x = self.dyn.state_integrate()(self.x_nom, dx)
             u = self.U[i]
             h = x[:6]
             q = x[6:]
-            forces = u[:n_forces]
-            dq_j = u[n_forces:]
+            forces = u[:nf]
+            dq_j = u[nf:]
             dq_b = self.dyn.get_base_velocity()(h, q, dq_j)
             dq = casadi.vertcat(dq_b, dq_j)
 
             # Dynamics constraint
-            x_next = self.x_nom + self.DX[i+1]
-            x_next_dyn = self.dyn.centroidal_dynamics(contact_ee_ids)(x, u, dq_b)
-            self.opti.subject_to(x_next == x_next_dyn)
+            dx_next = self.DX[i+1]
+            dx_dyn = self.dyn.centroidal_dynamics(contact_ee_ids, arm_ee_id)(x, u, dq_b)
+            self.opti.subject_to(dx_next == dx + dx_dyn * self.dt)
 
             # Contact constraints
             for idx, frame_id in enumerate(contact_ee_ids):
@@ -99,8 +108,9 @@ class OptimalControlProblem:
                 self.opti.subject_to(f_normal >= 0)
                 self.opti.subject_to(mu**2 * f_normal**2 >= f_tangent_square)
 
-                # Zero end-effector velocity
-                vel_lin = self.dyn.get_frame_velocity(frame_id)(q, dq)
+                # Zero end-effector velocity (linear)
+                vel = self.dyn.get_frame_velocity(frame_id)(q, dq)
+                vel_lin = vel[:3]
                 self.opti.subject_to(vel_lin == [0] * 3)
 
             # Swing foot trajectory
@@ -109,6 +119,16 @@ class OptimalControlProblem:
                 vel_z = self.dyn.get_frame_velocity(frame_id)(q, dq)[2]
                 vel_z_des = self.gait_sequence.get_bezier_vel_z(0, i, h=0.1)
                 self.opti.subject_to(vel_z == vel_z_des)
+
+            # Arm task
+            if arm_ee_id:
+                # Zero end-effector velocity (linear and angular)
+                vel = self.dyn.get_frame_velocity(arm_ee_id)(q, dq)
+                self.opti.subject_to(vel == [0] * 6)
+
+                # Force at end-effector
+                f_e = forces[3 * n_contact_feet :]
+                self.opti.subject_to(f_e == robot_class.arm_f_des)
 
             # State and input constraints
             # self.opti.subject_to(self.opti.bounded(-10, h, 10))  # COM
@@ -174,23 +194,18 @@ class OptimalControlProblem:
         self.us = []
         self.gaps = []
 
-        h_nom = self.x_nom[:6]
-        q_nom = self.x_nom[6:]
-
         for i in range(self.nodes):
             dx_sol = self.sol.value(self.DX[i])
+            x_sol = self.dyn.state_integrate()(self.x_nom, dx_sol)
             u_sol = self.sol.value(self.U[i])
-            h = h_nom + dx_sol[:6]
-            q = q_nom + dx_sol[6:]
-            self.hs.append(h)
-            self.qs.append(q)
-            self.us.append(u_sol)
+            self.hs.append(np.array(x_sol[:6]))
+            self.qs.append(np.array(x_sol[6:]))
+            self.us.append(np.array(u_sol))
 
         dx_last = self.sol.value(self.DX[self.nodes])
-        h_last = h_nom + dx_last[:6]
-        q_last = q_nom + dx_last[6:]
-        self.hs.append(h_last)
-        self.qs.append(q_last)
+        x_last = self.dyn.state_integrate()(self.x_nom, dx_last)
+        self.hs.append(np.array(x_last[:6]))
+        self.qs.append(np.array(x_last[6:]))
 
     def _compute_gaps(self):
         # TODO

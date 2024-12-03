@@ -7,7 +7,7 @@ from pinocchio.robot_wrapper import RobotWrapper
 
 
 class Robot:
-    def __init__(self, urdf_path, srdf_path, reference_pose, use_quaternion=False):
+    def __init__(self, urdf_path, srdf_path, reference_pose, use_quaternion=True):
         urdf_dir = dirname(abspath(urdf_path))
         if use_quaternion:
             joint_model = pin.JointModelFreeFlyer()
@@ -22,14 +22,19 @@ class Robot:
             pin.loadReferenceConfigurations(self.model, srdf_path)
             self.q0 = self.model.referenceConfigurations[reference_pose]
 
+        # Set nominal state: COM + joint positions
+        self.x_nom = np.concatenate((np.zeros(6), self.q0))
+
         self.nq = self.model.nq
         self.nv = self.model.nv
-        self.nj = self.nq - 6  # without base position and rotation
+        self.nj = self.nq - 7  # without base position and quaternion
 
         self.Q_weights = {
             "scaling": 1e0,
             "com": 100,
-            "base": 1000,
+            "base_xy": 0,
+            "base_z": 10,
+            "base_rot": 1000,
             "joints": 10,
         }
         self.R_weights = {
@@ -38,14 +43,22 @@ class Robot:
             "joints": 100,
         }
 
-    def set_gait_sequence(self, gait, nodes, dt):
+    def set_gait_sequence(self, gait, nodes, dt, arm_task=False):
         self.gait_sequence = GaitSequence(gait, nodes, dt)
         self.nf = 3 * self.gait_sequence.n_contacts
+        if arm_task:
+            self.nf += 3
+            self.arm_ee = "gripperMover"
+            self.arm_f_des = [-100, 0, 0]  # desired force at end-effector
+        else:
+            self.arm_ee = None
 
         # Weight matrices
         Q_diag = np.concatenate((
             [self.Q_weights["com"]] * 6,
-            [self.Q_weights["base"]] * 6,
+            [self.Q_weights["base_xy"]] * 2,
+            [self.Q_weights["base_z"]],
+            [self.Q_weights["base_rot"]] * 3,
             [self.Q_weights["joints"]] * self.nj
         ))
         R_diag = np.concatenate((
@@ -57,38 +70,21 @@ class Robot:
 
 
 class B2(Robot):
-    def __init__(self):
+    def __init__(self, reference_pose="standing"):
         urdf_path = "b2_description/urdf/b2.urdf"
         srdf_path = "b2_description/srdf/b2.srdf"
-        reference_pose = "standing"
         super().__init__(urdf_path, srdf_path, reference_pose)
-
-        self.x_nom = np.array([
-            0, 0, 0, 0, 0, 0,            # centroidal momentum
-            0, 0, 0.55, 0, 0, 0, # 1,      # base position and quaternion
-            0, 0.7, -1.5, 0, 0.7, -1.5,  # FL, FR joints
-            0, 0.7, -1.5, 0, 0.7, -1.5,  # RL, RR joints
-        ])
 
 
 class B2G(Robot):
-    def __init__(self):
+    def __init__(self, reference_pose="standing_with_arm_up"):
         urdf_path = "b2g_description/urdf/b2g.urdf"
         srdf_path = "b2g_description/srdf/b2g.srdf"
-        reference_pose = "standing_with_arm_home"
         super().__init__(urdf_path, srdf_path, reference_pose)
-
-        self.x_nom = np.array([
-            0, 0, 0, 0, 0, 0,            # centroidal momentum
-            0, 0, 0.55, 0, 0, 0, # 1,      # base position and quaternion
-            0, 0.7, -1.5, 0, 0.7, -1.5,  # FL, FR joints
-            0, 0.7, -1.5, 0, 0.7, -1.5,  # RL, RR joints
-            0, 0.26, -0.26, 0, 0, 0, 0   # arm joints
-        ])
 
 
 class GaitSequence:
-    def __init__(self, gait="trot", nodes=40, dt=0.02):
+    def __init__(self, gait="trot", nodes=20, dt=0.02):
         feet = ["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
         self.nodes = nodes
         self.dt = dt

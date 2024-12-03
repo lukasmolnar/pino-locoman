@@ -7,13 +7,13 @@ from helpers import *
 from optimal_control_problem import OptimalControlProblem
 
 # Problem parameters
-robot_class = B2()
-nodes = 40
+robot_class = B2G(reference_pose="standing_with_arm_forward")
+nodes = 20
 dt = 0.02
-robot_class.set_gait_sequence(gait="trot", nodes=nodes, dt=dt)
+robot_class.set_gait_sequence(gait="trot", nodes=nodes, dt=dt, arm_task=True)
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([1, 0, 0, 0, 0, 0])
+com_goal = np.array([0, 0, 0, 0, 0, 0])
 
 debug = False  # print info
 
@@ -34,14 +34,14 @@ def main():
     )
     oc_problem.solve(solver="fatrop", approx_hessian=True)
 
-    hs = np.vstack(oc_problem.hs)
-    qs = np.vstack(oc_problem.qs)
-    us = np.vstack(oc_problem.us)
+    hs = oc_problem.hs
+    qs = oc_problem.qs
+    us = oc_problem.us
 
-    print("Initial h: ", hs[0])
-    print("Final h: ", hs[-1])
-    print("Initial q: ", qs[0])
-    print("Final q: ", qs[-1])
+    print("Initial h: ", hs[0].T)
+    print("Final h: ", hs[-1].T)
+    print("Initial q: ", qs[0].T)
+    print("Final q: ", qs[-1].T)
 
     # Visualize
     robot.initViewer()
