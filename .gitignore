@@ -1,0 +1,7 @@
+# Solver files
+*.mtx
+*.casadi
+
+# Other
+__pycache__
+.vscode

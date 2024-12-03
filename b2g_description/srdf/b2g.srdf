@@ -126,6 +126,27 @@
         <joint name="joint5" value="0." />
         <joint name="joint6" value="0." />
     </group_state>
+    <group_state name="standing_with_arm_forward" group="whole_body">
+        <joint name="root_joint" value="0. 0. 0.55 0. 0. 0. 1."/>
+        <joint name="FL_calf_joint" value="-1.5"/>
+        <joint name="FL_hip_joint" value="0"/>
+        <joint name="FL_thigh_joint" value="0.7"/>
+        <joint name="FR_calf_joint" value="-1.5"/>
+        <joint name="FR_hip_joint" value="0"/>
+        <joint name="FR_thigh_joint" value="0.7"/>
+        <joint name="RL_calf_joint" value="-1.5"/>
+        <joint name="RL_hip_joint" value="0"/>
+        <joint name="RL_thigh_joint" value="0.7"/>
+        <joint name="RR_calf_joint" value="-1.5"/>
+        <joint name="RR_hip_joint" value="0"/>
+        <joint name="RR_thigh_joint" value="0.7"/>
+        <joint name="joint1" value="0." />
+        <joint name="joint2" value="2.5" />
+        <joint name="joint3" value="-1.5" />
+        <joint name="joint4" value="0.5" />
+        <joint name="joint5" value="0." />
+        <joint name="joint6" value="0." />
+    </group_state>
     <!--END EFFECTOR: Purpose: Represent information about an end effector.-->
     <end_effector name="lf_foot" parent_link="FL_foot" group="lf_leg"/>
     <end_effector name="rf_foot" parent_link="FR_foot" group="rf_leg"/>

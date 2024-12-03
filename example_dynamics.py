@@ -7,15 +7,15 @@ from helpers import *
 from optimal_control_problem import OptimalControlProblem
 
 # Problem parameters
-robot_class = B2()
-nodes = 30
-dt = 0.05
-robot_class.set_gait_sequence(gait="trot", nodes=nodes, dt=dt)
+robot_class = B2G(reference_pose="standing_with_arm_forward")
+nodes = 20
+dt = 0.02
+robot_class.set_gait_sequence(gait="trot", nodes=nodes, dt=dt, arm_task=True)
 
-# Tracking goal: x, y, yaw
-com_goal = np.array([0, 0, 0])
+# Tracking goal: linear and angular momentum
+com_goal = np.array([0, 0, 0, 0, 0, 0])
 
-debug = True  # print info
+debug = False  # print info
 
 
 def main():
@@ -24,6 +24,7 @@ def main():
     data = robot_class.data
     q0 = robot_class.q0
     print(model)
+    print(q0)
 
     pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
@@ -31,16 +32,16 @@ def main():
         robot_class=robot_class,
         com_goal=com_goal,
     )
-    oc_problem.solve(approx_hessian=True)
+    oc_problem.solve(solver="fatrop", approx_hessian=True)
 
-    hs = np.vstack(oc_problem.hs)
-    qs = np.vstack(oc_problem.qs)
-    us = np.vstack(oc_problem.us)
+    hs = oc_problem.hs
+    qs = oc_problem.qs
+    us = oc_problem.us
 
-    print("Initial h: ", hs[0])
-    print("Final h: ", hs[-1])
-    print("Initial q: ", qs[0])
-    print("Final q: ", qs[-1])
+    print("Initial h: ", hs[0].T)
+    print("Final h: ", hs[-1].T)
+    print("Initial q: ", qs[0].T)
+    print("Final q: ", qs[-1].T)
 
     # Visualize
     robot.initViewer()
