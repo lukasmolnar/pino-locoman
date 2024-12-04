@@ -7,13 +7,13 @@ from helpers import *
 from optimal_control_problem import OptimalControlProblem
 
 # Problem parameters
-robot_class = B2G(reference_pose="standing_with_arm_forward")
+robot_class = B2(reference_pose="standing")
 nodes = 20
 dt = 0.02
-robot_class.set_gait_sequence(gait="trot", nodes=nodes, dt=dt, arm_task=True)
+robot_class.set_gait_sequence(gait="trot", nodes=nodes, dt=dt, arm_task=False)
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([0, 0, 0, 0, 0, 0])
+com_goal = np.array([0.2, 0, 0, 0, 0, 0])
 
 debug = False  # print info
 
@@ -28,15 +28,20 @@ def main():
 
     pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
-    oc_problem = OptimalControlProblem(
+    # Setup OCP
+    ocp = OptimalControlProblem(
         robot_class=robot_class,
         com_goal=com_goal,
     )
-    oc_problem.solve(solver="fatrop", approx_hessian=True)
+    ocp.init_solver(solver="fatrop", approx_hessian=True)
+    x_nom = np.concatenate((np.zeros(6), q0))
+    ocp.update_nominal_state(x_nom)
+    ocp.update_gait_sequence(shift_idx=0)
+    ocp.solve(retract_all=True)
 
-    hs = oc_problem.hs
-    qs = oc_problem.qs
-    us = oc_problem.us
+    qs = ocp.qs
+    hs = ocp.hs
+    us = ocp.us
 
     print("Initial h: ", hs[0].T)
     print("Final h: ", hs[-1].T)

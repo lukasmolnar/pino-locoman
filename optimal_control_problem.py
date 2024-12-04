@@ -15,7 +15,6 @@ class OptimalControlProblem:
         self.opti = casadi.Opti()
         self.model = robot_class.model
         self.data = robot_class.data
-        self.x_nom = robot_class.x_nom
 
         self.gait_sequence = robot_class.gait_sequence
         self.nodes = self.gait_sequence.nodes
@@ -24,24 +23,24 @@ class OptimalControlProblem:
         self.R = robot_class.R
 
         mass = self.data.mass[0]
-        self.dyn = CentroidalDynamics(self.model, mass)
+        ee_ids = [self.model.getFrameId(f) for f in self.gait_sequence.feet]
+        self.dyn = CentroidalDynamics(self.model, mass, ee_ids)
+
+        if robot_class.arm_ee:
+            arm_ee_id = self.model.getFrameId(robot_class.arm_ee)
+        else:
+            arm_ee_id = None
 
         n_contact_feet = self.gait_sequence.n_contacts
+        nq = robot_class.nq
+        nv = robot_class.nv
         nf = robot_class.nf
         nj = robot_class.nj
-        nv = robot_class.nv
 
         # State and input dimensions
+        nx = 6 + nq  # COM + generalized coordinates
         ndx = 6 + nv  # COM + generalized velocities
         nu = nf + nj  # forces + joint velocities
-
-        # Desired state and input
-        dx_des = np.zeros(ndx)
-        dx_des[:6] = com_goal
-        f_des = np.tile([0, 0, 9.81 * mass / n_contact_feet], n_contact_feet)
-        if robot_class.arm_ee:
-            f_des = np.concatenate((f_des, robot_class.arm_f_des))
-        u_des = np.concatenate((f_des, np.zeros(nj)))
 
         # Decision variables
         self.DX = []
@@ -51,7 +50,21 @@ class OptimalControlProblem:
             self.U.append(self.opti.variable(nu))
         self.DX.append(self.opti.variable(ndx))
 
-        # Objective function
+        # Parameters
+        self.x_init = self.opti.parameter(nx)  # initial state
+        self.gait_idx = self.opti.parameter()  # where we are within the gait
+        self.contact_sequence = self.opti.parameter(4, self.nodes)  # gait contacts
+
+        # Desired state and input
+        x_des = robot_class.x_nom
+        x_des[:6] = com_goal
+        dx_des = self.dyn.state_difference()(self.x_init, x_des)
+        f_des = np.tile([0, 0, 9.81 * mass / n_contact_feet], 4)
+        if robot_class.arm_ee:
+            f_des = np.concatenate((f_des, robot_class.arm_f_des))
+        u_des = np.concatenate((f_des, np.zeros(nj)))
+
+        # OBJECTIVE
         obj = 0
 
         # Tracking and regularization
@@ -70,21 +83,13 @@ class OptimalControlProblem:
 
         self.opti.minimize(obj)
 
-        # Initial state
+        # CONSTRAINTS
         self.opti.subject_to(self.DX[0] == [0] * ndx)
 
         for i in range(self.nodes):
-            # Get end-effector frames
-            contact_ee_ids = [self.model.getFrameId(f) for f in self.gait_sequence.contact_list[i]]
-            swing_ee_ids = [self.model.getFrameId(f) for f in self.gait_sequence.swing_list[i]]
-            if robot_class.arm_ee:
-                arm_ee_id = self.model.getFrameId(robot_class.arm_ee)
-            else:
-                arm_ee_id = None
-
             # Gather all state and input info
             dx = self.DX[i]
-            x = self.dyn.state_integrate()(self.x_nom, dx)
+            x = self.dyn.state_integrate()(self.x_init, dx)
             u = self.U[i]
             h = x[:6]
             q = x[6:]
@@ -95,30 +100,34 @@ class OptimalControlProblem:
 
             # Dynamics constraint
             dx_next = self.DX[i+1]
-            dx_dyn = self.dyn.centroidal_dynamics(contact_ee_ids, arm_ee_id)(x, u, dq_b)
+            dx_dyn = self.dyn.centroidal_dynamics(arm_ee_id)(x, u, dq_b)
             self.opti.subject_to(dx_next == dx + dx_dyn * self.dt)
 
-            # Contact constraints
-            for idx, frame_id in enumerate(contact_ee_ids):
-                # Friction cone
+            # Contact and swing constraints
+            for idx, frame_id in enumerate(ee_ids):
                 f_e = forces[idx * 3 : (idx + 1) * 3]
+                in_contact = self.contact_sequence[idx, i]
+
+                # Friction cone
                 f_normal = f_e[2]
                 f_tangent_square = f_e[0]**2 + f_e[1]**2
-
-                self.opti.subject_to(f_normal >= 0)
-                self.opti.subject_to(mu**2 * f_normal**2 >= f_tangent_square)
+                self.opti.subject_to(in_contact * f_normal >= 0)
+                self.opti.subject_to(in_contact * mu**2 * f_normal**2 >= in_contact * f_tangent_square)
 
                 # Zero end-effector velocity (linear)
                 vel = self.dyn.get_frame_velocity(frame_id)(q, dq)
                 vel_lin = vel[:3]
-                self.opti.subject_to(vel_lin == [0] * 3)
+                self.opti.subject_to(in_contact * vel_lin == [0] * 3)
 
-            # Swing foot trajectory
-            for frame_id in swing_ee_ids:
+                # Zero end-effector force
+                self.opti.subject_to((1 - in_contact) * f_e == [0] * 3)
+
                 # Track bezier velocity (only in z)
-                vel_z = self.dyn.get_frame_velocity(frame_id)(q, dq)[2]
-                vel_z_des = self.gait_sequence.get_bezier_vel_z(0, i, h=0.1)
-                self.opti.subject_to(vel_z == vel_z_des)
+                vel_z = vel_lin[2]
+                bezier_idx = self.gait_idx + i
+                vel_z_des = self.gait_sequence.get_bezier_vel_z(0, bezier_idx, h=0.1)
+                vel_diff = vel_z - vel_z_des
+                self.opti.subject_to((1 - in_contact) * vel_diff == 0)
 
             # Arm task
             if arm_ee_id:
@@ -130,26 +139,38 @@ class OptimalControlProblem:
                 f_e = forces[3 * n_contact_feet :]
                 self.opti.subject_to(f_e == robot_class.arm_f_des)
 
-            # State and input constraints
-            # self.opti.subject_to(self.opti.bounded(-10, h, 10))  # COM
-            # self.opti.subject_to(self.opti.bounded(-1, q, 1))  # q
-            # self.opti.subject_to(self.opti.bounded(-500, forces, 500))  # forces
-            # self.opti.subject_to(self.opti.bounded(-1, dq_j, 1))  # dq_j
-
             # Warm start
-            self.opti.set_initial(self.DX[i], dx_des)
+            self.opti.set_initial(self.DX[i], np.zeros(ndx))
             self.opti.set_initial(self.U[i], u_des)
 
-        # Final state
-        # x_final = self.x_nom + self.DX[self.nodes]
-        # self.opti.subject_to(self.opti.bounded(-10, x_final[:6], 10))  # COM
-        # self.opti.subject_to(self.opti.bounded(-1, x_final[6:], 1))  # q
-
         # Warm start
-        self.opti.set_initial(self.DX[self.nodes], dx_des)
+        self.opti.set_initial(self.DX[self.nodes], np.zeros(ndx))
 
+        # Store solutions
+        self.hs = []
+        self.qs = []
+        self.us = []
 
-    def solve(self, solver="fatrop", approx_hessian=True):
+    def update_initial_state(self, x_init):
+        self.opti.set_value(self.x_init, x_init)
+
+    def update_gait_sequence(self, shift_idx=0):
+        shift_idx %= self.nodes
+        contact_sequence = self.gait_sequence.shift_contact_sequence(shift_idx)
+        self.opti.set_value(self.contact_sequence, contact_sequence)
+        self.opti.set_value(self.gait_idx, shift_idx)
+
+    def warm_start(self, dx_prev=None, u_prev=None):
+        # Shift previous solution
+        if dx_prev is not None:
+            for i in range(self.nodes):
+                self.opti.set_initial(self.DX[i], dx_prev[i+1])
+
+        if u_prev is not None:
+            for i in range(self.nodes - 1):
+                self.opti.set_initial(self.U[i], u_prev[i+1])
+
+    def init_solver(self, solver="fatrop", approx_hessian=True):
         if solver == "ipopt":
             opts = {"verbose": False}
             opts["ipopt"] = {
@@ -170,8 +191,17 @@ class OptimalControlProblem:
                 "debug": True,
             }
             opts["fatrop"] = {
-                "mu_init": 0.1
+                "tol": 1e-3,
+                "mu_init": 1e-3,
             }
+
+            # TODO: Check if code-generation is possible
+            # opts["jit"] = True
+            # opts["compiler"] = "shell"
+            # opts["jit_options"] = {
+            #     "flags": ["-O3"],
+            #     "verbose": True,
+            # }
 
         else:
             raise ValueError(f"Solver {solver} not supported")
@@ -179,31 +209,36 @@ class OptimalControlProblem:
         # Solver initialization
         self.opti.solver(solver, opts)
 
+    def solve(self, retract_all=True):
+
         try:
             self.sol = self.opti.solve()
         except:  # noqa: E722
             self.sol = self.opti.debug
 
-        # if self.sol.stats()["return_status"] == "Solve_Succeeded":
-        self._retract_trajectory()
+        # TODO: Check solution status
+        self._retract_trajectory(retract_all)
 
+        # Store previous solution
+        self.dx_prev = [self.sol.value(dx) for dx in self.DX]
+        self.u_prev = [self.sol.value(u) for u in self.U]
 
-    def _retract_trajectory(self):
-        self.hs = []
-        self.qs = []
-        self.us = []
-        self.gaps = []
+    def _retract_trajectory(self, retract_all=True):
+        x_init = self.opti.value(self.x_init)
 
         for i in range(self.nodes):
             dx_sol = self.sol.value(self.DX[i])
-            x_sol = self.dyn.state_integrate()(self.x_nom, dx_sol)
+            x_sol = self.dyn.state_integrate()(x_init, dx_sol)
             u_sol = self.sol.value(self.U[i])
             self.hs.append(np.array(x_sol[:6]))
             self.qs.append(np.array(x_sol[6:]))
             self.us.append(np.array(u_sol))
 
+            if i == 0 and not retract_all:
+                return
+
         dx_last = self.sol.value(self.DX[self.nodes])
-        x_last = self.dyn.state_integrate()(self.x_nom, dx_last)
+        x_last = self.dyn.state_integrate()(x_init, dx_last)
         self.hs.append(np.array(x_last[:6]))
         self.qs.append(np.array(x_last[6:]))
 

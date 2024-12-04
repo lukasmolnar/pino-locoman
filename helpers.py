@@ -2,6 +2,7 @@ from os.path import dirname, abspath
 
 import numpy as np
 import pinocchio as pin
+import casadi
 from pinocchio.robot_wrapper import RobotWrapper
 
 
@@ -33,8 +34,8 @@ class Robot:
             "scaling": 1e0,
             "com": 100,
             "base_xy": 0,
-            "base_z": 10,
-            "base_rot": 1000,
+            "base_z": 500,
+            "base_rot": 500,
             "joints": 10,
         }
         self.R_weights = {
@@ -45,7 +46,7 @@ class Robot:
 
     def set_gait_sequence(self, gait, nodes, dt, arm_task=False):
         self.gait_sequence = GaitSequence(gait, nodes, dt)
-        self.nf = 3 * self.gait_sequence.n_contacts
+        self.nf = 12  # forces at feet
         if arm_task:
             self.nf += 3
             self.arm_ee = "gripperMover"
@@ -85,58 +86,45 @@ class B2G(Robot):
 
 class GaitSequence:
     def __init__(self, gait="trot", nodes=20, dt=0.02):
-        feet = ["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
+        self.feet = ["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
         self.nodes = nodes
         self.dt = dt
-        self.contact_list = []
-        self.swing_list = []
+        self.contact_sequence = np.ones((4, nodes))
 
         if gait == "trot":
             self.N = nodes // 2
             self.n_contacts = 2
             for i in range(nodes):
                 if i < self.N:
-                    contact = [feet[0], feet[3]]
-                    swing = [feet[1], feet[2]]
+                    self.contact_sequence[1, i] = 0
+                    self.contact_sequence[2, i] = 0
                 else:
-                    contact = [feet[1], feet[2]]
-                    swing = [feet[0], feet[3]]
-                self.contact_list.append(contact)
-                self.swing_list.append(swing)
+                    self.contact_sequence[0, i] = 0
+                    self.contact_sequence[3, i] = 0
 
         if gait == "walk":
             self.N = nodes  # for now just 1 step
             self.n_contacts = 3
             for i in range(nodes):
                 if i < self.N:
-                    contact = [feet[0], feet[2], feet[3]]
-                    swing = [feet[1]] # FL
+                    self.contact_sequence[1, i] = 0
                 # elif i < 2 * self.N:
-                #     contact = [feet[0], feet[1], feet[3]]
-                #     swing = [feet[2]] # RR 
+                #     self.contact_sequence[2, i] = 0
                 # elif i < 3 * self.N:
-                #     contact = [feet[1], feet[2], feet[3]]
-                #     swing = [feet[0]] # FR
+                #     self.contact_sequence[0, i] = 0
                 # else:
-                #     contact = [feet[0], feet[1], feet[2]]
-                #     swing = [feet[3]] # RL
-                self.contact_list.append(contact)
-                self.swing_list.append(swing)
+                #     self.contact_sequence[3, i] = 0
 
         if gait == "stand":
             self.N = nodes
             self.n_contacts = 4
-            for i in range(nodes):
-                contact = [feet[0], feet[1], feet[2], feet[3]]
-                self.contact_list.append(contact)
-                self.swing_list.append([])
+
+    def shift_contact_sequence(self, idx):
+        return np.roll(self.contact_sequence, -idx, axis=1)
 
     def get_bezier_vel_z(self, p0_z, idx, h=0.1):
         T = self.N * self.dt
-        if idx < self.N:
-            t = idx * self.dt
-        else:
-            t = (idx - self.N) * self.dt
+        t = casadi.if_else(idx < self.N, idx * self.dt, (idx - self.N) * self.dt)
 
         p1_z = p0_z + h
         p2_z = p0_z
