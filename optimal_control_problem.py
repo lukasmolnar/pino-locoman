@@ -82,7 +82,6 @@ class OptimalControlProblem:
         err_dx = dx - dx_des
         obj += 0.5 * dx.T @ self.Q @ dx
 
-        self.opti.minimize(obj)
 
         # CONSTRAINTS
         self.opti.subject_to(self.DX[0] == [0] * ndx)
@@ -137,10 +136,13 @@ class OptimalControlProblem:
             if arm_ee_id:
                 # Zero end-effector velocity (linear and angular)
                 vel = self.dyn.get_frame_velocity(arm_ee_id)(q, dq)
-                self.opti.subject_to(vel == [0] * 6)
+                vel_lin = vel[:3]
+                vel_diff = vel_lin - robot_class.arm_vel_des
+                self.opti.subject_to(vel_diff == [0] * 3)
+                # obj += 0.5 * vel_diff.T @ vel_diff
 
-                # Force at end-effector
-                f_e = forces[3 * n_contact_feet :]
+                # Force at end-effector (after all feet)
+                f_e = forces[12:]
                 self.opti.subject_to(f_e == robot_class.arm_f_des)
 
             # Warm start
@@ -149,6 +151,9 @@ class OptimalControlProblem:
 
         # Warm start
         self.opti.set_initial(self.DX[self.nodes], np.zeros(ndx))
+
+        # OBJECTIVE
+        self.opti.minimize(obj)
 
         # Store solutions
         self.hs = []
@@ -195,6 +200,7 @@ class OptimalControlProblem:
                 "debug": True,
             }
             opts["fatrop"] = {
+                "print_level": 0,
                 "tol": 1e-3,
                 "mu_init": 1e-3,
             }

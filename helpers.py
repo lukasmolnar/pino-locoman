@@ -43,17 +43,17 @@ class Robot:
             "joints": 100,
         }
 
-    def set_gait_sequence(self, gait, nodes, dt, arm_task=False):
+    def set_gait_sequence(self, gait, nodes, dt):
         self.gait_sequence = GaitSequence(gait, nodes, dt)
         self.nf = 12  # forces at feet
-        if arm_task:
-            self.nf += 3
-            self.arm_ee = "gripperMover"
-            self.arm_f_des = [-100, 0, 0]  # desired force at end-effector
-        else:
-            self.arm_ee = None
 
-        # Weight matrices
+    def add_arm_task(self, f_des, vel_des=None):
+        self.nf += 3
+        self.arm_ee = "gripperMover"
+        self.arm_f_des = f_des
+        self.arm_vel_des = vel_des
+
+    def initialize_weights(self):
         Q_diag = np.concatenate((
             [self.Q_weights["com"]] * 6,
             [self.Q_weights["base_xy"]] * 2,
