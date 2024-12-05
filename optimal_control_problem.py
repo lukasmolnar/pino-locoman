@@ -18,6 +18,7 @@ class OptimalControlProblem:
 
         self.gait_sequence = robot_class.gait_sequence
         self.nodes = self.gait_sequence.nodes
+        self.gait_N = self.gait_sequence.N
         self.dt = self.gait_sequence.dt
         self.Q = robot_class.Q
         self.R = robot_class.R
@@ -123,9 +124,12 @@ class OptimalControlProblem:
                 self.opti.subject_to((1 - in_contact) * f_e == [0] * 3)
 
                 # Track bezier velocity (only in z)
+                # TODO: Check this, might only work for trot
                 vel_z = vel_lin[2]
-                bezier_idx = self.gait_idx + i
-                vel_z_des = self.gait_sequence.get_bezier_vel_z(0, bezier_idx, h=0.1)
+                bez_idx = self.gait_idx + i
+                bez_idx = casadi.if_else(bez_idx >= self.nodes, bez_idx - self.nodes, bez_idx)
+                bez_idx = casadi.if_else(bez_idx >= self.gait_N, bez_idx - self.gait_N, bez_idx)
+                vel_z_des = self.gait_sequence.get_bezier_vel_z(0, bez_idx, h=0.1)
                 vel_diff = vel_z - vel_z_des
                 self.opti.subject_to((1 - in_contact) * vel_diff == 0)
 

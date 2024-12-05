@@ -35,7 +35,7 @@ def main():
     )
     ocp.init_solver(solver="fatrop", approx_hessian=True)
     x_nom = np.concatenate((np.zeros(6), q0))
-    ocp.update_nominal_state(x_nom)
+    ocp.update_initial_state(x_nom)
     ocp.update_gait_sequence(shift_idx=0)
     ocp.solve(retract_all=True)
 

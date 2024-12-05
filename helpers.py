@@ -2,7 +2,6 @@ from os.path import dirname, abspath
 
 import numpy as np
 import pinocchio as pin
-import casadi
 from pinocchio.robot_wrapper import RobotWrapper
 
 
@@ -123,8 +122,9 @@ class GaitSequence:
         return np.roll(self.contact_sequence, -idx, axis=1)
 
     def get_bezier_vel_z(self, p0_z, idx, h=0.1):
+        # NOTE: idx needs to be in [0, N)
+        t = idx * self.dt
         T = self.N * self.dt
-        t = casadi.if_else(idx < self.N, idx * self.dt, (idx - self.N) * self.dt)
 
         p1_z = p0_z + h
         p2_z = p0_z

@@ -13,7 +13,7 @@ dt = 0.02
 robot_class.set_gait_sequence(gait="trot", nodes=nodes, dt=dt, arm_task=False)
 
 # MPC parameters
-mpc_nodes = 100
+mpc_nodes = 200
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.2, 0, 0, 0, 0, 0])
@@ -22,20 +22,25 @@ debug = False  # print info
 
 
 def mpc_loop(ocp, q0, N):
-    # Initial solve
+    # Initialize solver
     ocp.init_solver(solver="fatrop", approx_hessian=True)
     x_init = np.concatenate((np.zeros(6), q0))
     ocp.update_initial_state(x_init)
     ocp.update_gait_sequence(shift_idx=0)
     ocp.solve(retract_all=False)
 
-    # Loop
+    solve_time = ocp.sol.stats()["t_wall_total"]
+
     for k in range(1, N):
         x_init = ocp.dyn.state_integrate()(x_init, ocp.dx_prev[1])
         ocp.update_initial_state(x_init)
         ocp.update_gait_sequence(shift_idx=k)
         ocp.warm_start(ocp.dx_prev, ocp.u_prev)
         ocp.solve(retract_all=False)
+
+        solve_time += ocp.sol.stats()["t_wall_total"]
+
+    print("Average solve time: ", solve_time / N)
 
     return ocp
 
