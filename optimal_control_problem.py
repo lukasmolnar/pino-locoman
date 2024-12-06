@@ -9,15 +9,18 @@ class OptimalControlProblem:
     def __init__(
             self,
             robot_class,
+            nodes,
             com_goal,
+            step_height=0.1,
             mu=0.7,
         ):
         self.opti = casadi.Opti()
         self.model = robot_class.model
         self.data = robot_class.data
+        self.nodes = nodes
+        self.com_goal = com_goal
 
         self.gait_sequence = robot_class.gait_sequence
-        self.nodes = self.gait_sequence.nodes
         self.gait_N = self.gait_sequence.N
         self.dt = self.gait_sequence.dt
         self.Q = robot_class.Q
@@ -32,6 +35,7 @@ class OptimalControlProblem:
         else:
             arm_ee_id = None
 
+        n_feet = len(ee_ids)
         n_contact_feet = self.gait_sequence.n_contacts
         nq = robot_class.nq
         nv = robot_class.nv
@@ -54,13 +58,13 @@ class OptimalControlProblem:
         # Parameters
         self.x_init = self.opti.parameter(nx)  # initial state
         self.gait_idx = self.opti.parameter()  # where we are within the gait
-        self.contact_sequence = self.opti.parameter(4, self.nodes)  # gait contacts
+        self.contact_schedule = self.opti.parameter(n_feet, self.nodes)  # gait schedule: contacts / bezier indices
 
         # Desired state and input
         x_des = robot_class.x_nom
-        x_des[:6] = com_goal
+        x_des[:6] = self.com_goal
         dx_des = self.dyn.state_difference()(self.x_init, x_des)
-        f_des = np.tile([0, 0, 9.81 * mass / n_contact_feet], 4)
+        f_des = np.tile([0, 0, 9.81 * mass / n_contact_feet], n_feet)
         if robot_class.arm_ee:
             f_des = np.concatenate((f_des, robot_class.arm_f_des))
         u_des = np.concatenate((f_des, np.zeros(nj)))
@@ -106,7 +110,11 @@ class OptimalControlProblem:
             # Contact and swing constraints
             for idx, frame_id in enumerate(ee_ids):
                 f_e = forces[idx * 3 : (idx + 1) * 3]
-                in_contact = self.contact_sequence[idx, i]
+
+                # Determine contact and bezier index from schedule
+                schedule_idx = self.contact_schedule[idx, i]
+                in_contact = casadi.if_else(schedule_idx == 0, 1, 0)
+                bezier_idx = schedule_idx - 1
 
                 # Friction cone
                 f_normal = f_e[2]
@@ -123,14 +131,15 @@ class OptimalControlProblem:
                 self.opti.subject_to((1 - in_contact) * f_e == [0] * 3)
 
                 # Track bezier velocity (only in z)
-                # TODO: Check this, might only work for trot
                 vel_z = vel_lin[2]
-                bez_idx = self.gait_idx + i
-                bez_idx = casadi.if_else(bez_idx >= self.nodes, bez_idx - self.nodes, bez_idx)
-                bez_idx = casadi.if_else(bez_idx >= self.gait_N, bez_idx - self.gait_N, bez_idx)
-                vel_z_des = self.gait_sequence.get_bezier_vel_z(0, bez_idx, h=0.1)
+                vel_z_des = self.gait_sequence.get_bezier_vel_z(0, bezier_idx, h=step_height)
                 vel_diff = vel_z - vel_z_des
                 self.opti.subject_to((1 - in_contact) * vel_diff == 0)
+
+                # Humanoid example: flat feet
+                if n_feet == 2:
+                    vel_ang = vel[3:]
+                    self.opti.subject_to(vel_ang == [0] * 3)
 
             # Arm task
             if arm_ee_id:
@@ -142,7 +151,7 @@ class OptimalControlProblem:
                 # obj += 0.5 * vel_diff.T @ vel_diff
 
                 # Force at end-effector (after all feet)
-                f_e = forces[12:]
+                f_e = forces[3*n_feet:]
                 self.opti.subject_to(f_e == robot_class.arm_f_des)
 
             # Warm start
@@ -164,9 +173,8 @@ class OptimalControlProblem:
         self.opti.set_value(self.x_init, x_init)
 
     def update_gait_sequence(self, shift_idx=0):
-        shift_idx %= self.nodes
-        contact_sequence = self.gait_sequence.shift_contact_sequence(shift_idx)
-        self.opti.set_value(self.contact_sequence, contact_sequence)
+        contact_schedule = self.gait_sequence.shift_contact_schedule(shift_idx)
+        self.opti.set_value(self.contact_schedule, contact_schedule[:, :self.nodes])
         self.opti.set_value(self.gait_idx, shift_idx)
 
     def warm_start(self, dx_prev=None, u_prev=None):
@@ -202,7 +210,7 @@ class OptimalControlProblem:
             opts["fatrop"] = {
                 "print_level": 0,
                 "tol": 1e-3,
-                "mu_init": 1e-3,
+                "mu_init": 1e-8,
             }
 
             # TODO: Check if code-generation is possible

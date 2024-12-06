@@ -8,9 +8,14 @@ from optimal_control_problem import OptimalControlProblem
 
 # Problem parameters
 robot_class = B2(reference_pose="standing")
-nodes = 20
+gait_type = "trot"
+gait_nodes = 20
+ocp_nodes = 15
 dt = 0.02
-robot_class.set_gait_sequence(gait="trot", nodes=nodes, dt=dt, arm_task=False)
+
+arm_task = False
+arm_f_des = np.array([0, 0, -100])
+arm_vel_des = np.array([0.2, 0, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.2, 0, 0, 0, 0, 0])
@@ -19,6 +24,11 @@ debug = False  # print info
 
 
 def main():
+    robot_class.set_gait_sequence(gait_type, gait_nodes, dt)
+    if type(robot_class) == B2G and arm_task:
+        robot_class.add_arm_task(arm_f_des, arm_vel_des)
+    robot_class.initialize_weights()
+
     robot = robot_class.robot
     model = robot_class.model
     data = robot_class.data
@@ -31,6 +41,7 @@ def main():
     # Setup OCP
     ocp = OptimalControlProblem(
         robot_class=robot_class,
+        nodes=ocp_nodes,
         com_goal=com_goal,
     )
     ocp.init_solver(solver="fatrop", approx_hessian=True)
@@ -39,25 +50,16 @@ def main():
     ocp.update_gait_sequence(shift_idx=0)
     ocp.solve(retract_all=True)
 
-    qs = ocp.qs
-    hs = ocp.hs
-    us = ocp.us
-
-    print("Initial h: ", hs[0].T)
-    print("Final h: ", hs[-1].T)
-    print("Initial q: ", qs[0].T)
-    print("Final q: ", qs[-1].T)
-
     # Visualize
     robot.initViewer()
     robot.loadViewerModel("pinocchio")
     for _ in range(50):
-        for k in range(nodes):
-            q = qs[k]
+        for k in range(ocp_nodes):
+            q = ocp.qs[k]
             robot.display(q)
             if debug:
-                h = hs[k]
-                u = us[k]
+                h = ocp.hs[k]
+                u = ocp.us[k]
                 pin.computeAllTerms(model, data, q, np.zeros(model.nv))
                 print("k: ", k)
                 print("h: ", h)

@@ -8,16 +8,17 @@ from optimal_control_problem import OptimalControlProblem
 
 # Problem parameters
 robot_class = B2G(reference_pose="standing_with_arm_forward")
-gait = "trot"
-nodes = 16
+gait_type = "trot"
+gait_nodes = 20
+ocp_nodes = 15
 dt = 0.02
 
 arm_task = True
 arm_f_des = np.array([0, 0, -100])
-arm_vel_des = np.array([-0.2, 0, 0])
+arm_vel_des = np.array([0.2, 0, 0])
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([-0.2, 0, 0, 0, 0, 0])
+com_goal = np.array([0.2, 0, 0, 0, 0, 0])
 
 # MPC
 mpc_loops = 100
@@ -53,7 +54,7 @@ def mpc_loop(ocp, robot, q0, N):
 
 
 def main():
-    robot_class.set_gait_sequence(gait, nodes, dt)
+    robot_class.set_gait_sequence(gait_type, gait_nodes, dt)
     if type(robot_class) == B2G and arm_task:
         robot_class.add_arm_task(arm_f_des, arm_vel_des)
     robot_class.initialize_weights()
@@ -74,6 +75,7 @@ def main():
     # Setup OCP
     ocp = OptimalControlProblem(
         robot_class=robot_class,
+        nodes=ocp_nodes,
         com_goal=com_goal,
     )
     ocp = mpc_loop(ocp, robot, q0, mpc_loops)
