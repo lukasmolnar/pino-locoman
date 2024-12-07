@@ -7,13 +7,13 @@ from helpers import *
 from optimal_control_problem import OptimalControlProblem
 
 # Problem parameters
-robot_class = B2G(reference_pose="standing_with_arm_forward")
+# robot = B2(reference_pose="standing")
+robot = B2G(reference_pose="standing_with_arm_forward", ignore_arm=True)
 gait_type = "trot"
 gait_nodes = 20
 ocp_nodes = 15
 dt = 0.02
 
-arm_task = True
 arm_f_des = np.array([0, 0, -100])
 arm_vel_des = np.array([0.2, 0, 0])
 
@@ -26,7 +26,7 @@ mpc_loops = 100
 debug = False  # print info
 
 
-def mpc_loop(ocp, robot, q0, N):
+def mpc_loop(ocp, robot_instance, q0, N):
     # Initialize solver
     ocp.init_solver(solver="fatrop", approx_hessian=True)
     x_init = np.concatenate((np.zeros(6), q0))
@@ -34,17 +34,17 @@ def mpc_loop(ocp, robot, q0, N):
     ocp.update_gait_sequence(shift_idx=0)
     ocp.solve(retract_all=False)
 
-    robot.display(ocp.qs[-1])
+    robot_instance.display(ocp.qs[-1])
     solve_times = [ocp.sol.stats()["t_wall_total"]]
 
     for k in range(1, N):
-        x_init = ocp.dyn.state_integrate()(x_init, ocp.dx_prev[1])
+        x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
         ocp.update_initial_state(x_init)
         ocp.update_gait_sequence(shift_idx=k)
-        ocp.warm_start(ocp.dx_prev, ocp.u_prev)
+        ocp.warm_start(ocp.DX_prev, ocp.U_prev)
         ocp.solve(retract_all=False)
 
-        robot.display(ocp.qs[-1])
+        robot_instance.display(ocp.qs[-1])
         solve_times.append(ocp.sol.stats()["t_wall_total"])
 
     print("Avg solve time: ", np.average(solve_times))
@@ -54,37 +54,40 @@ def mpc_loop(ocp, robot, q0, N):
 
 
 def main():
-    robot_class.set_gait_sequence(gait_type, gait_nodes, dt)
-    if type(robot_class) == B2G and arm_task:
-        robot_class.add_arm_task(arm_f_des, arm_vel_des)
-    robot_class.initialize_weights()
+    robot.set_gait_sequence(gait_type, gait_nodes, dt)
+    if type(robot) == B2G and not robot.ignore_arm:
+        robot.add_arm_task(arm_f_des, arm_vel_des)
+    robot.initialize_weights()
 
-    robot = robot_class.robot
-    model = robot_class.model
-    data = robot_class.data
-    q0 = robot_class.q0
+    robot_instance = robot.robot
+    model = robot.model
+    data = robot.data
+    q0 = robot.q0
     print(model)
     print(q0)
 
     pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
-    robot.initViewer()
-    robot.loadViewerModel("pinocchio")
-    robot.display(q0)
+    robot_instance.initViewer()
+    robot_instance.loadViewerModel("pinocchio")
+    robot_instance.display(q0)
 
     # Setup OCP
     ocp = OptimalControlProblem(
-        robot_class=robot_class,
+        robot=robot,
         nodes=ocp_nodes,
         com_goal=com_goal,
     )
-    ocp = mpc_loop(ocp, robot, q0, mpc_loops)
+    ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
+
+    print("Final h: ", ocp.hs[-1].T)
+    print("Final q: ", ocp.qs[-1].T)
 
     # Visualize 
     for _ in range(50):
         for k in range(len(ocp.qs)):
             q = ocp.qs[k]
-            robot.display(q)
+            robot_instance.display(q)
             if debug:
                 h = ocp.hs[k]
                 u = ocp.us[k]
@@ -94,7 +97,6 @@ def main():
                 print("q: ", q)
                 print("u: ", u)
                 print("com: ", data.com[0])
-
             sleep(dt)
 
 

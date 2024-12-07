@@ -24,13 +24,19 @@ class Robot:
         else:
             self.q0 = self.robot.q0
 
-        # Set nominal state: COM + joint positions
-        self.x_nom = np.concatenate((np.zeros(6), self.q0))
-
         self.nq = self.model.nq
         self.nv = self.model.nv
         self.nj = self.nq - 7  # without base position and quaternion
 
+        # Nominal state: COM + DOFs
+        self.x_nom = np.concatenate((np.zeros(6), self.q0))
+
+        # DX indicies that are optimized
+        self.nx = len(self.x_nom)
+        self.ndx = self.nx - 1  # exclude quaternion
+        self.dx_opt_indices = np.arange(self.ndx)  # all by default
+
+        # OCP weights
         self.Q_weights = {
             "scaling": 1e0,
             "com": 100,
@@ -44,15 +50,16 @@ class Robot:
             "forces": 1,
             "joints": 100,
         }
-        self.arm_ee = None
+        self.arm_ee_id = None
 
     def set_gait_sequence(self, gait_type, gait_nodes, dt):
         self.gait_sequence = GaitSequence(gait_type, gait_nodes, dt)
+        self.ee_ids = [self.model.getFrameId(f) for f in self.gait_sequence.feet]
         self.nf = 12  # forces at feet
 
     def add_arm_task(self, f_des, vel_des=None):
         self.nf += 3
-        self.arm_ee = "gripperMover"
+        self.arm_ee_id = self.model.getFrameId("gripperMover")
         self.arm_f_des = f_des
         self.arm_vel_des = vel_des
 
@@ -71,6 +78,9 @@ class Robot:
         self.Q = self.Q_weights["scaling"] * np.diag(Q_diag)
         self.R = self.R_weights["scaling"] * np.diag(R_diag)
 
+        # Only consider optimized indices
+        self.Q = self.Q[self.dx_opt_indices][:, self.dx_opt_indices]
+
 
 class B2(Robot):
     def __init__(self, reference_pose="standing"):
@@ -80,10 +90,18 @@ class B2(Robot):
 
 
 class B2G(Robot):
-    def __init__(self, reference_pose="standing_with_arm_up"):
+    def __init__(self, reference_pose="standing_with_arm_up", ignore_arm=False):
         urdf_path = "b2g_description/urdf/b2g.urdf"
         srdf_path = "b2g_description/srdf/b2g.srdf"
         super().__init__(urdf_path, srdf_path, reference_pose)
+
+        # Ignore gripper joint in OCP
+        self.dx_opt_indices = self.dx_opt_indices[:-1]
+
+        self.ignore_arm = ignore_arm    
+        if self.ignore_arm:
+            # Ignore all arm joints in OCP
+            self.dx_opt_indices = self.dx_opt_indices[:-6]
 
 
 class GaitSequence:

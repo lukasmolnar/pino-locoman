@@ -7,7 +7,7 @@ from helpers import *
 from optimal_control_problem import OptimalControlProblem
 
 # Problem parameters
-robot_class = B2(reference_pose="standing")
+robot = B2(reference_pose="standing")
 gait_type = "trot"
 gait_nodes = 20
 ocp_nodes = 15
@@ -24,15 +24,15 @@ debug = False  # print info
 
 
 def main():
-    robot_class.set_gait_sequence(gait_type, gait_nodes, dt)
-    if type(robot_class) == B2G and arm_task:
-        robot_class.add_arm_task(arm_f_des, arm_vel_des)
-    robot_class.initialize_weights()
+    robot.set_gait_sequence(gait_type, gait_nodes, dt)
+    if type(robot) == B2G and arm_task:
+        robot.add_arm_task(arm_f_des, arm_vel_des)
+    robot.initialize_weights()
 
-    robot = robot_class.robot
-    model = robot_class.model
-    data = robot_class.data
-    q0 = robot_class.q0
+    robot_instance = robot.robot
+    model = robot.model
+    data = robot.data
+    q0 = robot.q0
     print(model)
     print(q0)
 
@@ -40,7 +40,7 @@ def main():
 
     # Setup OCP
     ocp = OptimalControlProblem(
-        robot_class=robot_class,
+        robot=robot,
         nodes=ocp_nodes,
         com_goal=com_goal,
     )
@@ -50,13 +50,16 @@ def main():
     ocp.update_gait_sequence(shift_idx=0)
     ocp.solve(retract_all=True)
 
+    print("Final h: ", ocp.hs[-1].T)
+    print("Final q: ", ocp.qs[-1].T)
+
     # Visualize
-    robot.initViewer()
-    robot.loadViewerModel("pinocchio")
+    robot_instance.initViewer()
+    robot_instance.loadViewerModel("pinocchio")
     for _ in range(50):
         for k in range(ocp_nodes):
             q = ocp.qs[k]
-            robot.display(q)
+            robot_instance.display(q)
             if debug:
                 h = ocp.hs[k]
                 u = ocp.us[k]

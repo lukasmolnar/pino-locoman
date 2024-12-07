@@ -2,6 +2,9 @@
 *.mtx
 *.casadi
 
+# NAO
+nao_description
+
 # Other
 __pycache__
 .vscode
