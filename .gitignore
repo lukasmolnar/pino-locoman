@@ -2,6 +2,11 @@
 *.mtx
 *.casadi
 
+# Codegen
+codegen/build
+codegen/lib
+*.c
+
 # NAO
 nao_description
 

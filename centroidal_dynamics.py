@@ -124,7 +124,7 @@ class CentroidalDynamics:
     def get_base_velocity(self):
         h = casadi.SX.sym("h", 6)
         q = casadi.SX.sym("q", self.nq)
-        dq_j = casadi.SX.sym("v", self.nj)
+        dq_j = casadi.SX.sym("dq_j", self.nj)
 
         # TODO: Check Pinocchio terms
         cpin.forwardKinematics(self.model, self.data, q)

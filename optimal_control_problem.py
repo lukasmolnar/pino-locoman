@@ -168,7 +168,10 @@ class OptimalControlProblem:
         # OBJECTIVE
         self.opti.minimize(obj)
 
-        # Store solutions
+        # TODO: Clean up how solutions are stored
+        self.DX_prev = None
+        self.U_prev = None
+        self.lam_g = None
         self.hs = []
         self.qs = []
         self.us = []
@@ -181,17 +184,23 @@ class OptimalControlProblem:
         self.opti.set_value(self.contact_schedule, contact_schedule[:, :self.nodes])
         self.opti.set_value(self.gait_idx, shift_idx)
 
-    def warm_start(self, DX_prev=None, U_prev=None):
+    def warm_start(self):
         # Shift previous solution
-        if DX_prev is not None:
+        # NOTE: No warm-start for last node, copying the 2nd last node performs worse.
+        if self.DX_prev is not None:
+            DX_init = self.DX_prev[1]
             for i in range(self.nodes):
-                self.opti.set_initial(self.DX_opt[i], DX_prev[i+1])
+                DX_diff = self.DX_prev[i+1] - DX_init
+                self.opti.set_initial(self.DX_opt[i], DX_diff)
 
-        if U_prev is not None:
+        if self.U_prev is not None:
             for i in range(self.nodes - 1):
-                self.opti.set_initial(self.U_opt[i], U_prev[i+1])
+                self.opti.set_initial(self.U_opt[i], self.U_prev[i+1])
 
-    def init_solver(self, solver="fatrop", approx_hessian=True):
+        if self.lam_g is not None:
+            self.opti.set_initial(self.opti.lam_g, self.lam_g)
+
+    def init_solver(self, solver="fatrop", compile_solver=False):
         if solver == "ipopt":
             opts = {"verbose": False}
             opts["ipopt"] = {
@@ -200,10 +209,8 @@ class OptimalControlProblem:
                 "tol": 1e-4,
                 "mu_strategy": "adaptive",
                 "nlp_scaling_method": "gradient-based",
+                "hessian_approximation": "limited-memory",
             }
-
-            if approx_hessian:
-                opts["ipopt"]["hessian_approximation"] = "limited-memory"
 
         elif solver == "fatrop":
             opts = {
@@ -215,13 +222,17 @@ class OptimalControlProblem:
                 "print_level": 0,
                 "tol": 1e-3,
                 "mu_init": 1e-8,
+                "warm_start_init_point": True,
+                "warm_start_mult_bound_push": 1e-7,
+                "bound_push": 1e-7,
             }
 
-            # TODO: Check if code-generation is possible
+            # TODO: Look into code-generation with jit
             # opts["jit"] = True
-            # opts["compiler"] = "shell"
+            # opts["jit_temp_suffix"] = False
             # opts["jit_options"] = {
-            #     "flags": ["-O3"],
+            #     "flags": ["-O1"],
+            #     "compiler": "ccache gcc",
             #     "verbose": True,
             # }
 
@@ -231,8 +242,16 @@ class OptimalControlProblem:
         # Solver initialization
         self.opti.solver(solver, opts)
 
-    def solve(self, retract_all=True):
+        # Code generation
+        if compile_solver:
+            solver_function = self.opti.to_function(
+                "compiled_solver",
+                [self.x_init, self.contact_schedule, self.gait_idx],  # parameters
+                [self.DX_opt[1], self.U_opt[0]]  # output
+            )
+            solver_function.generate("compiled_solver.c")
 
+    def solve(self, retract_all=True):
         try:
             self.sol = self.opti.solve()
         except:  # noqa: E722
@@ -244,6 +263,9 @@ class OptimalControlProblem:
         # Store previous solution
         self.DX_prev = [self.sol.value(dx) for dx in self.DX_opt]
         self.U_prev = [self.sol.value(u) for u in self.U_opt]
+
+        # Store dual variables
+        self.lam_g = self.sol.value(self.opti.lam_g)
 
     def _retract_trajectory(self, retract_all=True):
         x_init = self.opti.value(self.x_init)
@@ -263,12 +285,3 @@ class OptimalControlProblem:
         x_last = self.dyn.state_integrate()(x_init, dx_last)
         self.hs.append(np.array(x_last[:6]))
         self.qs.append(np.array(x_last[6:]))
-
-    def _compute_gaps(self):
-        # TODO
-        return
-
-    def _simulate_step(self, x, u):
-        # TODO
-        return
-

@@ -1,54 +1,81 @@
-from time import sleep
-
+import time
 import numpy as np
 import pinocchio as pin
+import casadi
 
 from helpers import *
 from optimal_control_problem import OptimalControlProblem
 
 # Problem parameters
 # robot = B2(reference_pose="standing")
-robot = B2G(reference_pose="standing_with_arm_forward", ignore_arm=True)
+robot = B2G(reference_pose="standing_with_arm_forward", ignore_arm=False)
 gait_type = "trot"
-gait_nodes = 20
-ocp_nodes = 15
-dt = 0.02
+gait_nodes = 14
+ocp_nodes = 10
+dt = 0.03
 
+# Only for B2G
 arm_f_des = np.array([0, 0, -100])
-arm_vel_des = np.array([0.2, 0, 0])
+arm_vel_des = np.array([0, 0, 0])
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([0.2, 0, 0, 0, 0, 0])
+com_goal = np.array([0, 0, 0, 0, 0, 0])
 
 # MPC
-mpc_loops = 100
+mpc_loops = 200
+
+# Compiled solver
+# NOTE: Make sure ocp_nodes and dt are correct!
+# load_compiled_solver = None
+load_compiled_solver = "libcompiled_solver_B2G_N10_dt03.so"
 
 debug = False  # print info
 
 
 def mpc_loop(ocp, robot_instance, q0, N):
-    # Initialize solver
-    ocp.init_solver(solver="fatrop", approx_hessian=True)
     x_init = np.concatenate((np.zeros(6), q0))
-    ocp.update_initial_state(x_init)
-    ocp.update_gait_sequence(shift_idx=0)
-    ocp.solve(retract_all=False)
+    solve_times = []
 
-    robot_instance.display(ocp.qs[-1])
-    solve_times = [ocp.sol.stats()["t_wall_total"]]
+    if load_compiled_solver:
+        # Load solver
+        compiled_solver = casadi.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
+        ocp.hs = []
+        ocp.qs = []
 
-    for k in range(1, N):
-        x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
-        ocp.update_initial_state(x_init)
-        ocp.update_gait_sequence(shift_idx=k)
-        ocp.warm_start(ocp.DX_prev, ocp.U_prev)
-        ocp.solve(retract_all=False)
+        for k in range(N):
+            # TODO: Look into warm-starting
+            contact_schedule = ocp.gait_sequence.shift_contact_schedule(k)[:,:ocp_nodes]
+            start_time = time.time()
+            DX_sol, U_sol = compiled_solver(x_init, contact_schedule, k)
+            end_time = time.time()
+            sol_time = end_time - start_time
+            solve_times.append(sol_time)
 
-        robot_instance.display(ocp.qs[-1])
-        solve_times.append(ocp.sol.stats()["t_wall_total"])
+            print("Solve time (ms): ", sol_time * 1000)
+            
+            x_init = ocp.dyn.state_integrate()(x_init, DX_sol)
+            h = np.array(x_init[:6])
+            q = np.array(x_init[6:])
+            ocp.hs.append(h)
+            ocp.qs.append(q)
+            robot_instance.display(q)
 
-    print("Avg solve time: ", np.average(solve_times))
-    print("Std solve time: ", np.std(solve_times))
+    else:
+        # Initialize solver
+        ocp.init_solver(solver="fatrop", compile_solver=False)
+
+        for k in range(N):
+            ocp.update_initial_state(x_init)
+            ocp.update_gait_sequence(shift_idx=k)
+            ocp.warm_start()
+            ocp.solve(retract_all=False)
+            solve_times.append(ocp.sol.stats()["t_wall_total"])
+
+            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+            robot_instance.display(ocp.qs[-1])  # Display last q
+
+    print("Avg solve time (ms): ", np.average(solve_times) * 1000)
+    print("Std solve time (ms): ", np.std(solve_times) * 1000)
 
     return ocp
 
@@ -97,7 +124,7 @@ def main():
                 print("q: ", q)
                 print("u: ", u)
                 print("com: ", data.com[0])
-            sleep(dt)
+            time.sleep(dt)
 
 
 if __name__ == "__main__":
