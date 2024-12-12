@@ -5,10 +5,18 @@ import casadi
 
 
 class CentroidalDynamics:
-    def __init__(self, model, mass):
+    def __init__(
+            self,
+            model,
+            mass,
+            ee_ids,
+            dx_opt_indices,
+        ):
         self.model = cpin.Model(model)
         self.data = self.model.createData()
         self.mass = mass
+        self.ee_ids = ee_ids
+        self.dx_opt_indices = dx_opt_indices
 
         self.nq = self.model.nq
         self.nv = self.model.nv
@@ -19,7 +27,10 @@ class CentroidalDynamics:
 
     def state_integrate(self, use_quat_nom=False):
         x = casadi.SX.sym("x", 6 + self.nq)
-        dx = casadi.SX.sym("dx", 6 + self.nv)
+        dx_opt = casadi.SX.sym("dx_opt", len(self.dx_opt_indices))
+
+        dx = casadi.SX.zeros(6 + self.nv)  # The other DXs remain zero
+        dx[self.dx_opt_indices] = dx_opt
 
         h = x[:6]
         q = x[6:]
@@ -45,16 +56,31 @@ class CentroidalDynamics:
         h_next = h + dh
         x_next = casadi.vertcat(h_next, q_next)
 
-        return casadi.Function("integrate", [x, dx], [x_next], ["x", "dx"], ["x_next"])
+        return casadi.Function("integrate", [x, dx_opt], [x_next], ["x", "dx_opt"], ["x_next"])
+    
+    def state_difference(self):
+        x0 = casadi.SX.sym("x0", 6 + self.nq)
+        x1 = casadi.SX.sym("x1", 6 + self.nq)
 
-    def centroidal_dynamics(self, contact_ee_ids, arm_ee_id=None):
+        h0 = x0[:6]
+        q0 = x0[6:]
+        h1 = x1[:6]
+        q1 = x1[6:]
+
+        dh = h1 - h0
+        dq = cpin.difference(self.model, q0, q1)
+        dx = casadi.vertcat(dh, dq)
+
+        return casadi.Function("difference", [x0, x1], [dx], ["x0", "x1"], ["dx"])
+
+    def centroidal_dynamics(self, arm_ee_id=None):
         # States
         p_com = casadi.SX.sym("p_com", 3)  # COM linear momentum
         l_com = casadi.SX.sym("l_com", 3)  # COM angular momentum
         q = casadi.SX.sym("q", self.nq)  # generalized coordinates (base + joints)
 
         # Inputs
-        nf = len(contact_ee_ids)
+        nf = len(self.ee_ids)
         if arm_ee_id:
             nf += 1
         f_e = [casadi.SX.sym(f"f_e_{i}", 3) for i in range(nf)]  # end-effector forces
@@ -73,7 +99,7 @@ class CentroidalDynamics:
         g = np.array([0, 0, -9.81 * self.mass])
         dp_com = sum(f_e) + g
         dl_com = casadi.SX.zeros(3)
-        for idx, frame_id in enumerate(contact_ee_ids):
+        for idx, frame_id in enumerate(self.ee_ids):
             r_ee = self.data.oMf[frame_id].translation - self.data.com[0]
             dl_com += casadi.cross(r_ee, f_e[idx])
         if arm_ee_id:
@@ -98,7 +124,7 @@ class CentroidalDynamics:
     def get_base_velocity(self):
         h = casadi.SX.sym("h", 6)
         q = casadi.SX.sym("q", self.nq)
-        dq_j = casadi.SX.sym("v", self.nj)
+        dq_j = casadi.SX.sym("dq_j", self.nj)
 
         # TODO: Check Pinocchio terms
         cpin.forwardKinematics(self.model, self.data, q)
@@ -118,17 +144,17 @@ class CentroidalDynamics:
 
         # TODO: Check Pinocchio terms
         cpin.forwardKinematics(self.model, self.data, q)
+        cpin.updateFramePlacement(self.model, self.data, frame_id)
         pos = self.data.oMf[frame_id].translation
 
         return casadi.Function("frame_pos", [q], [pos], ["q"], ["pos"])
 
-    def get_frame_velocity(self, frame_id):
+    def get_frame_velocity(self, frame_id, ref=pin.LOCAL_WORLD_ALIGNED):
         q = casadi.SX.sym("q", self.nq)
         dq = casadi.SX.sym("dq", self.nv)
 
         # TODO: Check Pinocchio terms
         cpin.forwardKinematics(self.model, self.data, q, dq)
-        ref = pin.LOCAL_WORLD_ALIGNED
         vel = cpin.getFrameVelocity(self.model, self.data, frame_id, ref).vector
 
         return casadi.Function("frame_vel", [q, dq], [vel], ["q", "dq"], ["vel"])

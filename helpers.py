@@ -21,20 +21,28 @@ class Robot:
         if srdf_path and reference_pose:
             pin.loadReferenceConfigurations(self.model, srdf_path)
             self.q0 = self.model.referenceConfigurations[reference_pose]
-
-        # Set nominal state: COM + joint positions
-        self.x_nom = np.concatenate((np.zeros(6), self.q0))
+        else:
+            self.q0 = self.robot.q0
 
         self.nq = self.model.nq
         self.nv = self.model.nv
         self.nj = self.nq - 7  # without base position and quaternion
 
+        # Nominal state: COM + DOFs
+        self.x_nom = np.concatenate((np.zeros(6), self.q0))
+
+        # DX indicies that are optimized
+        self.nx = len(self.x_nom)
+        self.ndx = self.nx - 1  # exclude quaternion
+        self.dx_opt_indices = np.arange(self.ndx)  # all by default
+
+        # OCP weights
         self.Q_weights = {
             "scaling": 1e0,
             "com": 100,
             "base_xy": 0,
-            "base_z": 10,
-            "base_rot": 1000,
+            "base_z": 500,
+            "base_rot": 500,
             "joints": 10,
         }
         self.R_weights = {
@@ -42,18 +50,20 @@ class Robot:
             "forces": 1,
             "joints": 100,
         }
+        self.arm_ee_id = None
 
-    def set_gait_sequence(self, gait, nodes, dt, arm_task=False):
-        self.gait_sequence = GaitSequence(gait, nodes, dt)
-        self.nf = 3 * self.gait_sequence.n_contacts
-        if arm_task:
-            self.nf += 3
-            self.arm_ee = "gripperMover"
-            self.arm_f_des = [-100, 0, 0]  # desired force at end-effector
-        else:
-            self.arm_ee = None
+    def set_gait_sequence(self, gait_type, gait_nodes, dt):
+        self.gait_sequence = GaitSequence(gait_type, gait_nodes, dt)
+        self.ee_ids = [self.model.getFrameId(f) for f in self.gait_sequence.feet]
+        self.nf = 12  # forces at feet
 
-        # Weight matrices
+    def add_arm_task(self, f_des, vel_des=None):
+        self.nf += 3
+        self.arm_ee_id = self.model.getFrameId("gripperMover")
+        self.arm_f_des = f_des
+        self.arm_vel_des = vel_des
+
+    def initialize_weights(self):
         Q_diag = np.concatenate((
             [self.Q_weights["com"]] * 6,
             [self.Q_weights["base_xy"]] * 2,
@@ -68,6 +78,9 @@ class Robot:
         self.Q = self.Q_weights["scaling"] * np.diag(Q_diag)
         self.R = self.R_weights["scaling"] * np.diag(R_diag)
 
+        # Only consider optimized indices
+        self.Q = self.Q[self.dx_opt_indices][:, self.dx_opt_indices]
+
 
 class B2(Robot):
     def __init__(self, reference_pose="standing"):
@@ -77,66 +90,76 @@ class B2(Robot):
 
 
 class B2G(Robot):
-    def __init__(self, reference_pose="standing_with_arm_up"):
+    def __init__(self, reference_pose="standing_with_arm_up", ignore_arm=False):
         urdf_path = "b2g_description/urdf/b2g.urdf"
         srdf_path = "b2g_description/srdf/b2g.srdf"
         super().__init__(urdf_path, srdf_path, reference_pose)
 
+        # Ignore gripper joint in OCP
+        self.dx_opt_indices = self.dx_opt_indices[:-1]
+
+        self.ignore_arm = ignore_arm    
+        if self.ignore_arm:
+            # Ignore all arm joints in OCP
+            self.dx_opt_indices = self.dx_opt_indices[:-6]
+
 
 class GaitSequence:
-    def __init__(self, gait="trot", nodes=20, dt=0.02):
-        feet = ["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
-        self.nodes = nodes
+    def __init__(self, gait_type="trot", gait_nodes=20, dt=0.02):
+        self.feet = ["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
+        self.gait_nodes = gait_nodes
         self.dt = dt
-        self.contact_list = []
-        self.swing_list = []
 
-        if gait == "trot":
-            self.N = nodes // 2
+        # 0: in contact, otherwise index of bezier curve (starting at 1)
+        self.contact_schedule = np.zeros((4, gait_nodes))
+
+        if gait_type == "trot":
+            self.N = gait_nodes // 2
             self.n_contacts = 2
-            for i in range(nodes):
+            for i in range(gait_nodes):
+                bez_idx = i % self.N + 1  # start at 1 to distinguish from contact
                 if i < self.N:
-                    contact = [feet[0], feet[3]]
-                    swing = [feet[1], feet[2]]
+                    # FL, RR in swing
+                    self.contact_schedule[1, i] = bez_idx
+                    self.contact_schedule[2, i] = bez_idx
                 else:
-                    contact = [feet[1], feet[2]]
-                    swing = [feet[0], feet[3]]
-                self.contact_list.append(contact)
-                self.swing_list.append(swing)
+                    # FR, RL in swing
+                    self.contact_schedule[0, i] = bez_idx
+                    self.contact_schedule[3, i] = bez_idx
 
-        if gait == "walk":
-            self.N = nodes  # for now just 1 step
+        elif gait_type == "walk":
+            self.N = gait_nodes // 4
             self.n_contacts = 3
-            for i in range(nodes):
+            for i in range(gait_nodes):
+                bez_idx = i % self.N + 1  # start at 1 to distinguish from contact
                 if i < self.N:
-                    contact = [feet[0], feet[2], feet[3]]
-                    swing = [feet[1]] # FL
-                # elif i < 2 * self.N:
-                #     contact = [feet[0], feet[1], feet[3]]
-                #     swing = [feet[2]] # RR 
-                # elif i < 3 * self.N:
-                #     contact = [feet[1], feet[2], feet[3]]
-                #     swing = [feet[0]] # FR
-                # else:
-                #     contact = [feet[0], feet[1], feet[2]]
-                #     swing = [feet[3]] # RL
-                self.contact_list.append(contact)
-                self.swing_list.append(swing)
+                    # FL in swing
+                    self.contact_schedule[1, i] = bez_idx
+                elif i < 2 * self.N:
+                    # RR in swing
+                    self.contact_schedule[2, i] = bez_idx
+                elif i < 3 * self.N:
+                    # FR in swing
+                    self.contact_schedule[0, i] = bez_idx
+                else:
+                    # RL in swing
+                    self.contact_schedule[3, i] = bez_idx
 
-        if gait == "stand":
-            self.N = nodes
+        elif gait_type == "stand":
+            self.N = gait_nodes
             self.n_contacts = 4
-            for i in range(nodes):
-                contact = [feet[0], feet[1], feet[2], feet[3]]
-                self.contact_list.append(contact)
-                self.swing_list.append([])
 
-    def get_bezier_vel_z(self, p0_z, idx, h=0.1):
-        T = self.N * self.dt
-        if idx < self.N:
-            t = idx * self.dt
         else:
-            t = (idx - self.N) * self.dt
+            raise ValueError(f"Gait: {gait_type} not supported")
+
+    def shift_contact_schedule(self, shift_idx):
+        shift_idx %= self.gait_nodes
+        return np.roll(self.contact_schedule, -shift_idx, axis=1)
+    
+    def get_bezier_vel_z(self, p0_z, idx, h=0.1):
+        # NOTE: idx needs to be in [0, N)
+        t = idx * self.dt
+        T = self.N * self.dt
 
         p1_z = p0_z + h
         p2_z = p0_z
