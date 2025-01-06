@@ -39,8 +39,8 @@ class Robot:
         # OCP weights
         self.Q_weights = {
             "scaling": 1e0,
-            "com": 100,
-            "base_xy": 0,
+            "com": 1000,
+            "base_xy": 10,
             "base_z": 500,
             "base_rot": 500,
             "joints": 10,

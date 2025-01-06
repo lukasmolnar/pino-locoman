@@ -10,7 +10,6 @@ class OptimalControlProblem:
             self,
             robot,
             nodes,
-            com_goal,
             step_height=0.1,
             mu=0.7,
         ):
@@ -19,7 +18,6 @@ class OptimalControlProblem:
         self.data = robot.data
         self.gait_sequence = robot.gait_sequence
         self.nodes = nodes
-        self.com_goal = com_goal
 
         mass = self.data.mass[0]
         dt = self.gait_sequence.dt
@@ -51,15 +49,18 @@ class OptimalControlProblem:
         self.x_init = self.opti.parameter(robot.nx)  # initial state
         self.gait_idx = self.opti.parameter()  # where we are within the gait
         self.contact_schedule = self.opti.parameter(n_feet, self.nodes)  # gait schedule: contacts / bezier indices
+        self.com_goal = self.opti.parameter(6)  # linear + angular momentum
+        self.arm_f_des = self.opti.parameter(3)  # force at end-effector
+        self.arm_vel_des = self.opti.parameter(3)  # velocity at end-effector
 
         # Desired state and input
-        x_des = robot.x_nom
-        x_des[:6] = self.com_goal
+        x_des = casadi.vertcat(self.com_goal, robot.q0)
         dx_des = self.dyn.state_difference()(self.x_init, x_des)
         dx_des = dx_des[dx_opt_indices]
         f_des = np.tile([0, 0, 9.81 * mass / n_contact_feet], n_feet)
         if robot.arm_ee_id:
-            f_des = np.concatenate((f_des, robot.arm_f_des))
+            # TODO: Check if arm force = 0 is ok (it is constrained later)
+            f_des = np.concatenate((f_des, np.zeros(3)))
         u_des = np.concatenate((f_des, np.zeros(robot.nj)))
 
         # OBJECTIVE
@@ -78,7 +79,6 @@ class OptimalControlProblem:
         dx = self.DX_opt[self.nodes]
         err_dx = dx - dx_des
         obj += 0.5 * dx.T @ Q @ dx
-
 
         # CONSTRAINTS
         self.opti.subject_to(self.DX_opt[0] == [0] * ndx_opt)
@@ -150,13 +150,13 @@ class OptimalControlProblem:
                 # Zero end-effector velocity (linear and angular)
                 vel = self.dyn.get_frame_velocity(arm_ee_id)(q, dq)
                 vel_lin = vel[:3]
-                vel_diff = vel_lin - robot.arm_vel_des
+                vel_diff = vel_lin - self.arm_vel_des
                 self.opti.subject_to(vel_diff == [0] * 3)
                 # obj += 0.5 * vel_diff.T @ vel_diff
 
                 # Force at end-effector (after all feet)
                 f_e = forces[3*n_feet:]
-                self.opti.subject_to(f_e == robot.arm_f_des)
+                self.opti.subject_to(f_e == self.arm_f_des)
 
             # Warm start
             self.opti.set_initial(self.DX_opt[i], np.zeros(ndx_opt))
@@ -183,6 +183,13 @@ class OptimalControlProblem:
         contact_schedule = self.gait_sequence.shift_contact_schedule(shift_idx)
         self.opti.set_value(self.contact_schedule, contact_schedule[:, :self.nodes])
         self.opti.set_value(self.gait_idx, shift_idx)
+
+    def set_com_goal(self, com_goal):
+        self.opti.set_value(self.com_goal, com_goal)
+
+    def set_arm_task(self, arm_f_des, arm_vel_des):
+        self.opti.set_value(self.arm_f_des, arm_f_des)
+        self.opti.set_value(self.arm_vel_des, arm_vel_des)
 
     def warm_start(self):
         # Shift previous solution
@@ -246,7 +253,7 @@ class OptimalControlProblem:
         if compile_solver:
             solver_function = self.opti.to_function(
                 "compiled_solver",
-                [self.x_init, self.contact_schedule, self.gait_idx],  # parameters
+                [self.x_init, self.contact_schedule, self.gait_idx, self.com_goal, self.arm_f_des, self.arm_vel_des],  # parameters
                 [self.DX_opt[1], self.U_opt[0]]  # output
             )
             solver_function.generate("compiled_solver.c")

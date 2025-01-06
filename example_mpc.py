@@ -8,26 +8,27 @@ from optimal_control_problem import OptimalControlProblem
 
 # Problem parameters
 # robot = B2(reference_pose="standing")
-robot = B2G(reference_pose="standing_with_arm_forward", ignore_arm=False)
+robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_nodes = 14
-ocp_nodes = 10
+ocp_nodes = 8
 dt = 0.03
 
 # Only for B2G
-arm_f_des = np.array([0, 0, -100])
-arm_vel_des = np.array([0, 0, 0])
+arm_f_des = np.array([0, 0, 0])
+arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([0, 0, 0, 0, 0, 0])
+com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 
 # MPC
 mpc_loops = 200
 
 # Compiled solver
 # NOTE: Make sure ocp_nodes and dt are correct!
+compile_solver = False
 # load_compiled_solver = None
-load_compiled_solver = "libcompiled_solver_B2G_N10_dt03.so"
+load_compiled_solver = "libsolver_trot_N8_dt03.so"
 
 debug = False  # print info
 
@@ -46,7 +47,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
             # TODO: Look into warm-starting
             contact_schedule = ocp.gait_sequence.shift_contact_schedule(k)[:,:ocp_nodes]
             start_time = time.time()
-            DX_sol, U_sol = compiled_solver(x_init, contact_schedule, k)
+            DX_sol, U_sol = compiled_solver(x_init, contact_schedule, k, com_goal, arm_f_des, arm_vel_des)
             end_time = time.time()
             sol_time = end_time - start_time
             solve_times.append(sol_time)
@@ -62,7 +63,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
     else:
         # Initialize solver
-        ocp.init_solver(solver="fatrop", compile_solver=False)
+        ocp.init_solver(solver="fatrop", compile_solver=compile_solver)
 
         for k in range(N):
             ocp.update_initial_state(x_init)
@@ -103,8 +104,9 @@ def main():
     ocp = OptimalControlProblem(
         robot=robot,
         nodes=ocp_nodes,
-        com_goal=com_goal,
     )
+    ocp.set_com_goal(com_goal)
+    ocp.set_arm_task(arm_f_des, arm_vel_des)
     ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
 
     print("Final h: ", ocp.hs[-1].T)

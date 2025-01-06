@@ -8,22 +8,22 @@ from optimal_control_problem import OptimalControlProblem
 
 # Problem parameters
 # robot = B2(reference_pose="standing")
-robot = B2G(reference_pose="standing_with_arm_forward", ignore_arm=False)
+robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_nodes = 14
-ocp_nodes = 10
+ocp_nodes = 8
 dt = 0.03
 
 # Only for B2G
-arm_f_des = np.array([0, 0, -100])
-arm_vel_des = np.array([0, 0, 0])
+arm_f_des = np.array([0, 0, 0])
+arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([0, 0, 0, 0, 0, 0])
+com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 
 # Compiled solver
 compile_solver = False
-load_compiled_solver = None # "libcompiled_solver_B2G_N10_dt03.so"
+load_compiled_solver = None
 
 debug = False  # print info
 
@@ -47,8 +47,10 @@ def main():
     ocp = OptimalControlProblem(
         robot=robot,
         nodes=ocp_nodes,
-        com_goal=com_goal,
     )
+    ocp.set_com_goal(com_goal)
+    ocp.set_arm_task(arm_f_des, arm_vel_des)
+
     x_init = np.concatenate((np.zeros(6), q0))
     gait_idx = 0
 
