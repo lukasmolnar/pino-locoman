@@ -257,16 +257,26 @@ class OptimalControlProblem:
             }
             self.sqp_sol = casadi.qpsol("solver", "osqp", self.sqp)
 
+            # Parametrize
             x_param = casadi.MX.sym("x_param", x.size())
             p_param = casadi.MX.sym("p_param", p.size())
             lbg_param = casadi.MX.sym("lbg_param", lbg.size())
             ubg_param = casadi.MX.sym("ubg_param", ubg.size())
 
+            # State bounds (only for initial state)
+            lbx = -np.inf * np.ones(x.size())
+            ubx = np.inf * np.ones(x.size())
+            lbx[:self.ndx_opt] = 0
+            ubx[:self.ndx_opt] = 0
+
+            # Store solver as casadi function
             sqp_sol_x = self.sqp_sol(
                 x0=np.zeros(x.size()),
                 p=casadi.vertcat(x_param, p_param),
                 lbg=lbg_param,
-                ubg=ubg_param
+                ubg=ubg_param,
+                lbx=lbx,
+                ubx=ubx,
             )["x"]
             self.sqp_function = casadi.Function("sqp_sol", [x_param, p_param, lbg_param, ubg_param], [sqp_sol_x])
 
@@ -305,10 +315,13 @@ class OptimalControlProblem:
                 self.opti.value(self.arm_f_des),
                 self.opti.value(self.arm_vel_des),
             )
-            lbg_eval = casadi.substitute(self.opti.lbg, self.opti.p, ocp_params)
-            ubg_eval = casadi.substitute(self.opti.ubg, self.opti.p, ocp_params)
-            lbg = casadi.evalf(lbg_eval)
-            ubg = casadi.evalf(ubg_eval)
+            # Substitute parameters
+            sqp_f = casadi.substitute(self.sqp["f"], self.opti.p, ocp_params)
+            sqp_g = casadi.substitute(self.sqp["g"], self.opti.p, ocp_params)
+            lbg = casadi.substitute(self.opti.lbg, self.opti.p, ocp_params)
+            ubg = casadi.substitute(self.opti.ubg, self.opti.p, ocp_params)
+            lbg = casadi.evalf(lbg)
+            ubg = casadi.evalf(ubg)
 
             # Initial guess
             qp_sol_x = self.opti.value(self.opti.x, self.opti.initial())
@@ -316,21 +329,25 @@ class OptimalControlProblem:
 
             # TODO: How many iterations
             for _ in range(3):
-                # sqp_f = casadi.substitute(self.sqp["f"], self.opti.x, qp_sol_x)
-                # sqp_g = casadi.substitute(self.sqp["g"], self.opti.x, qp_sol_x)
-                # sqp_f = casadi.substitute(sqp_f, self.opti.p, ocp_params)
-                # sqp_g = casadi.substitute(sqp_g, self.opti.p, ocp_params)
+                # sqp_f = casadi.substitute(sqp_f, self.opti.x, qp_sol_x)
+                # sqp_g = casadi.substitute(sqp_g, self.opti.x, qp_sol_x)
                 # sqp = {
                 #     "x": self.sqp["x"],
                 #     "f": sqp_f,
                 #     "g": sqp_g,
                 # }
                 # sqp_sol = casadi.qpsol("sqp", "osqp", sqp)
-                # sqp_sol_dx = sqp_sol(lbg=lbg, ubg=ubg)["x"]
+                # sol_dx = sqp_sol(lbg=lbg, ubg=ubg)["x"]
 
-                sqp_sol_dx = self.sqp_function(qp_sol_x, ocp_params, lbg, ubg)
+                sol_dx = self.sqp_function(qp_sol_x, ocp_params, lbg, ubg)
+                qp_sol_x += sol_dx
 
-                qp_sol_x += sqp_sol_dx
+                # Armijo line search
+                # qp_sol_x = self._armijo_line_search(
+                #     x_init=qp_sol_x,
+                #     dx=sqp_sol_dx,
+                #     f_init=sqp_f,
+                # )
 
             end_time = time.time()
             self.solve_time = end_time - start_time
@@ -379,3 +396,41 @@ class OptimalControlProblem:
         if retract_all:
             self.hs.append(np.array(x_last[:6]))
             self.qs.append(np.array(x_last[6:]))
+
+    def _armijo_line_search(self, x_init, dx, f_init):
+        # Params
+        c = 0.1
+        rho = 0.5
+        a = 1.0
+        min_a = 1e-6
+
+        current_f = casadi.substitute(f_init, self.opti.x, x_init)
+        current_f = casadi.substitute(current_f, self.sqp["x"], dx)
+        current_f = casadi.evalf(current_f)
+
+        grad_f = casadi.gradient(f_init, self.opti.x)
+        grad_f = casadi.substitute(grad_f, self.opti.x, x_init)
+        grad_f = casadi.substitute(grad_f, self.sqp["x"], dx)
+        grad_f = casadi.evalf(grad_f)
+
+        directional_derivative = grad_f.T @ dx
+
+        while a > min_a:
+            # Evaluate the objective at the new point
+            sol_x = x_init + a * dx
+            sol_f = casadi.substitute(f_init, self.opti.x, sol_x)
+            sol_f = casadi.substitute(sol_f, self.sqp["x"], a * dx)
+            sol_f = casadi.evalf(sol_f)
+            
+            # Check Armijo condition
+            if sol_f <= current_f + c * a * directional_derivative:
+                break  # Armijo condition satisfied
+            a *= rho  # Reduce step size
+
+        # Final solution
+        if a > min_a:
+            print("Armijo converged with a: ", a)
+            return sol_x
+        else:
+            print("Armijo failed to converge")
+            return x_init
