@@ -1,5 +1,6 @@
 import numpy as np
 import casadi
+import time
 
 from helpers import *
 from centroidal_dynamics import CentroidalDynamics
@@ -31,8 +32,8 @@ class OptimalControlProblem:
 
         # State and inputs to optimize
         dx_opt_indices = robot.dx_opt_indices
-        ndx_opt = len(dx_opt_indices)
-        nu_opt = robot.nf + robot.nj  # forces + joint velocities
+        self.ndx_opt = len(dx_opt_indices)
+        self.nu_opt = robot.nf + robot.nj  # forces + joint velocities
 
         # Dynamics
         self.dyn = CentroidalDynamics(self.model, mass, ee_ids, dx_opt_indices)
@@ -41,13 +42,12 @@ class OptimalControlProblem:
         self.DX_opt = []
         self.U_opt = []
         for i in range(self.nodes):
-            self.DX_opt.append(self.opti.variable(ndx_opt))
-            self.U_opt.append(self.opti.variable(nu_opt))
-        self.DX_opt.append(self.opti.variable(ndx_opt))
+            self.DX_opt.append(self.opti.variable(self.ndx_opt))
+            self.U_opt.append(self.opti.variable(self.nu_opt))
+        self.DX_opt.append(self.opti.variable(self.ndx_opt))
 
         # Parameters
         self.x_init = self.opti.parameter(robot.nx)  # initial state
-        self.gait_idx = self.opti.parameter()  # where we are within the gait
         self.contact_schedule = self.opti.parameter(n_feet, self.nodes)  # gait schedule: contacts / bezier indices
         self.com_goal = self.opti.parameter(6)  # linear + angular momentum
         self.arm_f_des = self.opti.parameter(3)  # force at end-effector
@@ -81,7 +81,7 @@ class OptimalControlProblem:
         obj += 0.5 * dx.T @ Q @ dx
 
         # CONSTRAINTS
-        self.opti.subject_to(self.DX_opt[0] == [0] * ndx_opt)
+        self.opti.subject_to(self.DX_opt[0] == [0] * self.ndx_opt)
 
         for i in range(self.nodes):
             # Gather all state and input info
@@ -100,6 +100,8 @@ class OptimalControlProblem:
             dx_dyn = self.dyn.centroidal_dynamics(arm_ee_id)(x, u, dq_b)
             dx_dyn = dx_dyn[dx_opt_indices]
             self.opti.subject_to(dx_next == dx_opt + dx_dyn * dt)
+
+            # TODO: Check if constraint q_next = q + dq * dt is necessary
 
             # Contact and swing constraints
             for idx, frame_id in enumerate(ee_ids):
@@ -159,11 +161,11 @@ class OptimalControlProblem:
                 self.opti.subject_to(f_e == self.arm_f_des)
 
             # Warm start
-            self.opti.set_initial(self.DX_opt[i], np.zeros(ndx_opt))
+            self.opti.set_initial(self.DX_opt[i], np.zeros(self.ndx_opt))
             self.opti.set_initial(self.U_opt[i], u_des)
 
         # Warm start
-        self.opti.set_initial(self.DX_opt[self.nodes], np.zeros(ndx_opt))
+        self.opti.set_initial(self.DX_opt[self.nodes], np.zeros(self.ndx_opt))
 
         # OBJECTIVE
         self.opti.minimize(obj)
@@ -179,10 +181,9 @@ class OptimalControlProblem:
     def update_initial_state(self, x_init):
         self.opti.set_value(self.x_init, x_init)
 
-    def update_gait_sequence(self, shift_idx=0):
+    def update_contact_schedule(self, shift_idx=0):
         contact_schedule = self.gait_sequence.shift_contact_schedule(shift_idx)
         self.opti.set_value(self.contact_schedule, contact_schedule[:, :self.nodes])
-        self.opti.set_value(self.gait_idx, shift_idx)
 
     def set_com_goal(self, com_goal):
         self.opti.set_value(self.com_goal, com_goal)
@@ -208,18 +209,9 @@ class OptimalControlProblem:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
 
     def init_solver(self, solver="fatrop", compile_solver=False):
-        if solver == "ipopt":
-            opts = {"verbose": False}
-            opts["ipopt"] = {
-                "max_iter": 1000,
-                "linear_solver": "mumps",
-                "tol": 1e-4,
-                "mu_strategy": "adaptive",
-                "nlp_scaling_method": "gradient-based",
-                "hessian_approximation": "limited-memory",
-            }
+        self.solver_type = solver
 
-        elif solver == "fatrop":
+        if solver == "fatrop":
             opts = {
                 "expand": True,
                 "structure_detection": "auto",
@@ -233,62 +225,157 @@ class OptimalControlProblem:
                 "warm_start_mult_bound_push": 1e-7,
                 "bound_push": 1e-7,
             }
-
-            # TODO: Look into code-generation with jit
-            # opts["jit"] = True
-            # opts["jit_temp_suffix"] = False
-            # opts["jit_options"] = {
-            #     "flags": ["-O1"],
-            #     "compiler": "ccache gcc",
-            #     "verbose": True,
+            self.opti.solver(solver, opts)
+        
+        elif solver == "osqp":
+            # self.qp = {
+            #     "x": self.opti.x,
+            #     "p": self.opti.p,
+            #     "f": self.opti.f,
+            #     "g": self.opti.g,
             # }
+            # self.qpsol = casadi.qpsol("solver", "osqp", self.qp)
+
+            x = self.opti.x
+            p = self.opti.p
+            f = self.opti.f
+            g = self.opti.g
+            lbg = self.opti.lbg
+            ubg = self.opti.ubg
+
+            J_g = casadi.jacobian(g, x)
+            hess_f, grad_f = casadi.hessian(f, x)
+
+            sqp_x = casadi.MX.sym("sqp_x", x.size())
+            sqp_f = 0.5 * sqp_x.T @ hess_f @ sqp_x + grad_f.T @ sqp_x
+            sqp_g = self.opti.g + J_g @ sqp_x
+            self.sqp = {
+                "x": sqp_x,
+                "p": casadi.vertcat(x, p),
+                "f": sqp_f,
+                "g": sqp_g,
+            }
+            self.sqp_sol = casadi.qpsol("solver", "osqp", self.sqp)
+
+            x_param = casadi.MX.sym("x_param", x.size())
+            p_param = casadi.MX.sym("p_param", p.size())
+            lbg_param = casadi.MX.sym("lbg_param", lbg.size())
+            ubg_param = casadi.MX.sym("ubg_param", ubg.size())
+
+            sqp_sol_x = self.sqp_sol(
+                x0=np.zeros(x.size()),
+                p=casadi.vertcat(x_param, p_param),
+                lbg=lbg_param,
+                ubg=ubg_param
+            )["x"]
+            self.sqp_function = casadi.Function("sqp_sol", [x_param, p_param, lbg_param, ubg_param], [sqp_sol_x])
 
         else:
             raise ValueError(f"Solver {solver} not supported")
-
-        # Solver initialization
-        self.opti.solver(solver, opts)
 
         # Code generation
         if compile_solver:
             solver_function = self.opti.to_function(
                 "compiled_solver",
-                [self.x_init, self.contact_schedule, self.gait_idx, self.com_goal, self.arm_f_des, self.arm_vel_des],  # parameters
+                [self.x_init, self.contact_schedule, self.com_goal, self.arm_f_des, self.arm_vel_des],  # parameters
                 [self.DX_opt[1], self.U_opt[0]]  # output
             )
             solver_function.generate("compiled_solver.c")
 
     def solve(self, retract_all=True):
-        try:
-            self.sol = self.opti.solve()
-        except:  # noqa: E722
-            self.sol = self.opti.debug
+        if self.solver_type == "fatrop":
+            try:
+                self.sol = self.opti.solve()
+            except:  # noqa: E722
+                self.sol = self.opti.debug
 
-        # TODO: Check solution status
-        self._retract_trajectory(retract_all)
+            self.solve_time = self.sol.stats()["t_wall_total"]
 
-        # Store previous solution
+            # TODO: Check solution status
+            self._retract_opti_sol(retract_all)
+
+            # Store dual variables
+            self.lam_g = self.sol.value(self.opti.lam_g)
+
+        elif self.solver_type == "osqp":
+            ocp_params = casadi.vertcat(
+                self.opti.value(self.x_init),
+                casadi.vec(self.opti.value(self.contact_schedule)),  # flattened
+                self.opti.value(self.com_goal),
+                self.opti.value(self.arm_f_des),
+                self.opti.value(self.arm_vel_des),
+            )
+            lbg_eval = casadi.substitute(self.opti.lbg, self.opti.p, ocp_params)
+            ubg_eval = casadi.substitute(self.opti.ubg, self.opti.p, ocp_params)
+            lbg = casadi.evalf(lbg_eval)
+            ubg = casadi.evalf(ubg_eval)
+
+            # Initial guess
+            qp_sol_x = self.opti.value(self.opti.x, self.opti.initial())
+            start_time = time.time()
+
+            # TODO: How many iterations
+            for _ in range(3):
+                # sqp_f = casadi.substitute(self.sqp["f"], self.opti.x, qp_sol_x)
+                # sqp_g = casadi.substitute(self.sqp["g"], self.opti.x, qp_sol_x)
+                # sqp_f = casadi.substitute(sqp_f, self.opti.p, ocp_params)
+                # sqp_g = casadi.substitute(sqp_g, self.opti.p, ocp_params)
+                # sqp = {
+                #     "x": self.sqp["x"],
+                #     "f": sqp_f,
+                #     "g": sqp_g,
+                # }
+                # sqp_sol = casadi.qpsol("sqp", "osqp", sqp)
+                # sqp_sol_dx = sqp_sol(lbg=lbg, ubg=ubg)["x"]
+
+                sqp_sol_dx = self.sqp_function(qp_sol_x, ocp_params, lbg, ubg)
+
+                qp_sol_x += sqp_sol_dx
+
+            end_time = time.time()
+            self.solve_time = end_time - start_time
+
+            self._retract_qp_sol(qp_sol_x, retract_all)
+
+    def _retract_opti_sol(self, retract_all=True):
+        # Retract self.opti solution stored in self.sol
         self.DX_prev = [self.sol.value(dx) for dx in self.DX_opt]
         self.U_prev = [self.sol.value(u) for u in self.U_opt]
-
-        # Store dual variables
-        self.lam_g = self.sol.value(self.opti.lam_g)
-
-    def _retract_trajectory(self, retract_all=True):
         x_init = self.opti.value(self.x_init)
 
-        for i in range(self.nodes):
-            dx_sol = self.sol.value(self.DX_opt[i])
+        for dx_sol, u_sol in zip(self.DX_prev, self.U_prev):
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
-            u_sol = self.sol.value(self.U_opt[i])
             self.hs.append(np.array(x_sol[:6]))
             self.qs.append(np.array(x_sol[6:]))
             self.us.append(np.array(u_sol))
 
-            if i == 0 and not retract_all:
+            if not retract_all:
                 return
 
-        dx_last = self.sol.value(self.DX_opt[self.nodes])
+    def _retract_qp_sol(self, qp_sol_x, retract_all=True):
+        # Retract the given QP solution
+        self.DX_prev = []
+        self.U_prev = []
+        x_init = self.opti.value(self.x_init)
+        nx_opt = self.ndx_opt + self.nu_opt
+
+        for i in range(self.nodes):
+            sol = qp_sol_x[i*nx_opt : (i+1)*nx_opt]
+            dx_sol = sol[:self.ndx_opt]
+            u_sol = sol[self.ndx_opt:]
+            x_sol = self.dyn.state_integrate()(x_init, dx_sol)
+            self.DX_prev.append(np.array(dx_sol))
+            self.U_prev.append(np.array(u_sol))
+            
+            if i == 0 or retract_all:
+                self.hs.append(np.array(x_sol[:6]))
+                self.qs.append(np.array(x_sol[6:]))
+                self.us.append(np.array(u_sol))
+
+        dx_last = qp_sol_x[self.nodes*nx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)
-        self.hs.append(np.array(x_last[:6]))
-        self.qs.append(np.array(x_last[6:]))
+        self.DX_prev.append(np.array(dx_last))
+
+        if retract_all:
+            self.hs.append(np.array(x_last[:6]))
+            self.qs.append(np.array(x_last[6:]))

@@ -22,13 +22,13 @@ arm_vel_des = np.array([0.1, 0, 0])
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 
 # MPC
-mpc_loops = 200
+mpc_loops = 50
 
 # Compiled solver
 # NOTE: Make sure ocp_nodes and dt are correct!
 compile_solver = False
-# load_compiled_solver = None
-load_compiled_solver = "libsolver_trot_N8_dt03.so"
+load_compiled_solver = None
+# load_compiled_solver = "libsolver_trot_N8_dt03.so"
 
 debug = False  # print info
 
@@ -63,14 +63,14 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
     else:
         # Initialize solver
-        ocp.init_solver(solver="fatrop", compile_solver=compile_solver)
+        ocp.init_solver(solver="osqp", compile_solver=compile_solver)
 
         for k in range(N):
             ocp.update_initial_state(x_init)
-            ocp.update_gait_sequence(shift_idx=k)
+            ocp.update_contact_schedule(shift_idx=k)
             ocp.warm_start()
             ocp.solve(retract_all=False)
-            solve_times.append(ocp.sol.stats()["t_wall_total"])
+            solve_times.append(ocp.solve_time)
 
             x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
             robot_instance.display(ocp.qs[-1])  # Display last q
