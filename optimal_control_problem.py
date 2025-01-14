@@ -1,6 +1,8 @@
 import numpy as np
 import casadi
 import time
+import osqp
+from scipy import sparse
 
 from helpers import *
 from centroidal_dynamics import CentroidalDynamics
@@ -20,23 +22,23 @@ class OptimalControlProblem:
         self.gait_sequence = robot.gait_sequence
         self.nodes = nodes
 
-        mass = self.data.mass[0]
-        dt = self.gait_sequence.dt
-        ee_ids = robot.ee_ids
-        arm_ee_id = robot.arm_ee_id
+        self.mass = self.data.mass[0]
+        self.dt = self.gait_sequence.dt
+        self.ee_ids = robot.ee_ids
+        self.arm_ee_id = robot.arm_ee_id
+    
         Q = robot.Q
         R = robot.R
-
-        n_feet = len(ee_ids)
+        n_feet = len(self.ee_ids)
         n_contact_feet = self.gait_sequence.n_contacts
 
         # State and inputs to optimize
-        dx_opt_indices = robot.dx_opt_indices
-        self.ndx_opt = len(dx_opt_indices)
+        self.dx_opt_indices = robot.dx_opt_indices
+        self.ndx_opt = len(self.dx_opt_indices)
         self.nu_opt = robot.nf + robot.nj  # forces + joint velocities
 
         # Dynamics
-        self.dyn = CentroidalDynamics(self.model, mass, ee_ids, dx_opt_indices)
+        self.dyn = CentroidalDynamics(self.model, self.mass, self.ee_ids, self.dx_opt_indices)
 
         # Decision variables
         self.DX_opt = []
@@ -56,8 +58,8 @@ class OptimalControlProblem:
         # Desired state and input
         x_des = casadi.vertcat(self.com_goal, robot.q0)
         dx_des = self.dyn.state_difference()(self.x_init, x_des)
-        dx_des = dx_des[dx_opt_indices]
-        f_des = np.tile([0, 0, 9.81 * mass / n_contact_feet], n_feet)
+        dx_des = dx_des[self.dx_opt_indices]
+        f_des = np.tile([0, 0, 9.81 * self.mass / n_contact_feet], n_feet)
         if robot.arm_ee_id:
             # TODO: Check if arm force = 0 is ok (it is constrained later)
             f_des = np.concatenate((f_des, np.zeros(3)))
@@ -97,14 +99,14 @@ class OptimalControlProblem:
 
             # Dynamics constraint
             dx_next = self.DX_opt[i+1]
-            dx_dyn = self.dyn.centroidal_dynamics(arm_ee_id)(x, u, dq_b)
-            dx_dyn = dx_dyn[dx_opt_indices]
-            self.opti.subject_to(dx_next == dx_opt + dx_dyn * dt)
+            dx_dyn = self.dyn.centroidal_dynamics(self.arm_ee_id)(x, u, dq_b)
+            dx_dyn = dx_dyn[self.dx_opt_indices]
+            self.opti.subject_to(dx_next == dx_opt + dx_dyn * self.dt)
 
             # TODO: Check if constraint q_next = q + dq * dt is necessary
 
             # Contact and swing constraints
-            for idx, frame_id in enumerate(ee_ids):
+            for idx, frame_id in enumerate(self.ee_ids):
                 f_e = forces[idx * 3 : (idx + 1) * 3]
 
                 # Determine contact and bezier index from schedule
@@ -142,15 +144,15 @@ class OptimalControlProblem:
             if n_feet == 2:
                 # Minimum distance between feet
                 min_dist = 0.095  # standing pose is 0.1
-                foot_0 = self.dyn.get_frame_position(ee_ids[0])(q)
-                foot_1 = self.dyn.get_frame_position(ee_ids[1])(q)
+                foot_0 = self.dyn.get_frame_position(self.ee_ids[0])(q)
+                foot_1 = self.dyn.get_frame_position(self.ee_ids[1])(q)
                 foot_diff = foot_1 - foot_0
                 self.opti.subject_to(foot_diff[0]**2 + foot_diff[1]**2 >= min_dist**2)
 
             # Arm task
-            if arm_ee_id:
+            if self.arm_ee_id:
                 # Zero end-effector velocity (linear and angular)
-                vel = self.dyn.get_frame_velocity(arm_ee_id)(q, dq)
+                vel = self.dyn.get_frame_velocity(self.arm_ee_id)(q, dq)
                 vel_lin = vel[:3]
                 vel_diff = vel_lin - self.arm_vel_des
                 self.opti.subject_to(vel_diff == [0] * 3)
@@ -226,7 +228,16 @@ class OptimalControlProblem:
                 "bound_push": 1e-7,
             }
             self.opti.solver(solver, opts)
-        
+
+            # Code generation
+            if compile_solver:
+                solver_function = self.opti.to_function(
+                    "compiled_solver",
+                    [self.x_init, self.contact_schedule, self.com_goal, self.arm_f_des, self.arm_vel_des],  # parameters
+                    [self.DX_opt[1], self.U_opt[0]]  # output
+                )
+                solver_function.generate("compiled_solver.c")
+
         elif solver == "osqp":
             # Get all info from self.opti
             x = self.opti.x
@@ -239,44 +250,20 @@ class OptimalControlProblem:
             J_g = casadi.jacobian(g, x)
             hess_f, grad_f = casadi.hessian(f, x)
 
-            # SQP
-            sqp_x = casadi.MX.sym("sqp_x", x.size())
-            sqp_f = 0.5 * sqp_x.T @ hess_f @ sqp_x + grad_f.T @ sqp_x
-            sqp_g = g + J_g @ sqp_x
-            self.sqp = {
-                "x": sqp_x,
-                "p": casadi.vertcat(x, p),
-                "f": sqp_f,
-                "g": sqp_g,
+            # Store data functions
+            self.sqp_data = casadi.Function("sqp_data", [x, p], [hess_f, grad_f, J_g, g, lbg, ubg])
+            self.f_data = casadi.Function("f_data", [x, p], [f, grad_f])
+            self.g_data = casadi.Function("g_data", [x, p], [g, lbg, ubg])
+
+            # OSQP options
+            self.osqp_opts = {
+                "max_iter": 100,
+                "alpha": 1.4,
+                "rho": 2e-2,
             }
-            self.sqp_sol = casadi.qpsol("solver", "osqp", self.sqp)
-
-            # Parametrize
-            x_param = casadi.MX.sym("x_param", x.size())
-            p_param = casadi.MX.sym("p_param", p.size())
-            lbg_param = casadi.MX.sym("lbg_param", lbg.size())
-            ubg_param = casadi.MX.sym("ubg_param", ubg.size())
-
-            # Store solver as casadi function
-            sqp_sol_x = self.sqp_sol(
-                x0=np.zeros(x.size()),
-                p=casadi.vertcat(x_param, p_param),
-                lbg=lbg_param,
-                ubg=ubg_param,
-            )["x"]
-            self.sqp_function = casadi.Function("sqp_sol", [x_param, p_param, lbg_param, ubg_param], [sqp_sol_x])
 
         else:
             raise ValueError(f"Solver {solver} not supported")
-
-        # Code generation
-        if compile_solver:
-            solver_function = self.opti.to_function(
-                "compiled_solver",
-                [self.x_init, self.contact_schedule, self.com_goal, self.arm_f_des, self.arm_vel_des],  # parameters
-                [self.DX_opt[1], self.U_opt[0]]  # output
-            )
-            solver_function.generate("compiled_solver.c")
 
     def solve(self, retract_all=True):
         if self.solver_type == "fatrop":
@@ -298,49 +285,44 @@ class OptimalControlProblem:
                 self.opti.value(self.x_init),
                 casadi.vec(self.opti.value(self.contact_schedule)),  # flattened
                 self.opti.value(self.com_goal),
-                self.opti.value(self.arm_f_des),
-                self.opti.value(self.arm_vel_des),
             )
-            # Substitute parameters
-            sqp_f = casadi.substitute(self.sqp["f"], self.opti.p, ocp_params)
-            sqp_g = casadi.substitute(self.sqp["g"], self.opti.p, ocp_params)
-            lbg = casadi.substitute(self.opti.lbg, self.opti.p, ocp_params)
-            ubg = casadi.substitute(self.opti.ubg, self.opti.p, ocp_params)
-            lbg = casadi.evalf(lbg)
-            ubg = casadi.evalf(ubg)
+            if self.arm_ee_id:
+                ocp_params = casadi.vertcat(
+                    ocp_params,
+                    self.opti.value(self.arm_f_des),
+                    self.opti.value(self.arm_vel_des),
+                )
 
             # Initial guess
-            qp_sol_x = self.opti.value(self.opti.x, self.opti.initial())
+            current_x = self.opti.value(self.opti.x, self.opti.initial())
             start_time = time.time()
 
-            # TODO: How many iterations
-            for _ in range(2):
-                sqp_f = casadi.substitute(sqp_f, self.opti.x, qp_sol_x)
-                sqp_g = casadi.substitute(sqp_g, self.opti.x, qp_sol_x)
-                sqp = {
-                    "x": self.sqp["x"],
-                    "f": sqp_f,
-                    "g": sqp_g,
-                }
-                sqp_sol = casadi.qpsol("sqp", "osqp", sqp)
-                sol_dx = sqp_sol(lbg=lbg, ubg=ubg)["x"]
+            # TODO: How many iterations?
+            for _ in range(5):
+                # OSQP
+                hess_f, grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, ocp_params)
+                P = sparse.csc_matrix(hess_f)
+                A = sparse.csc_matrix(J_g)
+                q = np.array(grad_f)
+                l = np.array(lbg - g)
+                u = np.array(ubg - g)
 
-                # sol_dx = self.sqp_function(qp_sol_x, ocp_params, lbg, ubg)
-                # qp_sol_x += sol_dx
+                # TODO: Possibly use update
+                self.osqp_prob = osqp.OSQP()
+                self.osqp_prob.setup(P, q, A, l, u, **self.osqp_opts)
+                sol_dx = self.osqp_prob.solve().x
 
                 # Armijo line search
-                qp_sol_x = self._armijo_line_search(
-                    current_x=qp_sol_x,
+                current_x = self._armijo_line_search(
+                    current_x=current_x,
                     dx=sol_dx,
                     ocp_params=ocp_params,
-                    lbg=lbg,
-                    ubg=ubg,
                 )
 
             end_time = time.time()
             self.solve_time = end_time - start_time
 
-            self._retract_qp_sol(qp_sol_x, retract_all)
+            self._retract_qp_sol(current_x, retract_all)
 
     def _retract_opti_sol(self, retract_all=True):
         # Retract self.opti solution stored in self.sol
@@ -357,7 +339,7 @@ class OptimalControlProblem:
             if not retract_all:
                 return
 
-    def _retract_qp_sol(self, qp_sol_x, retract_all=True):
+    def _retract_qp_sol(self, sol_x, retract_all=True):
         # Retract the given QP solution
         self.DX_prev = []
         self.U_prev = []
@@ -365,7 +347,7 @@ class OptimalControlProblem:
         nx_opt = self.ndx_opt + self.nu_opt
 
         for i in range(self.nodes):
-            sol = qp_sol_x[i*nx_opt : (i+1)*nx_opt]
+            sol = sol_x[i*nx_opt : (i+1)*nx_opt]
             dx_sol = sol[:self.ndx_opt]
             u_sol = sol[self.ndx_opt:]
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
@@ -377,7 +359,7 @@ class OptimalControlProblem:
                 self.qs.append(np.array(x_sol[6:]))
                 self.us.append(np.array(u_sol))
 
-        dx_last = qp_sol_x[self.nodes*nx_opt:]
+        dx_last = sol_x[self.nodes*nx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)
         self.DX_prev.append(np.array(dx_last))
 
@@ -385,59 +367,62 @@ class OptimalControlProblem:
             self.hs.append(np.array(x_last[:6]))
             self.qs.append(np.array(x_last[6:]))
 
-    def _armijo_line_search(self, current_x, dx, ocp_params, lbg, ubg):
+    def _armijo_line_search(self, current_x, dx, ocp_params):
         # Params
-        c = 0.1
-        rho = 0.5
+        armijo_factor = 1e-4
         a = 1.0
-        min_a = 1e-6
-        constraint_tol = 1e-5
+        a_min = 1e-4
+        a_decay = 0.5
+        g_max = 1e-3
+        g_min = 1e-5
+        gamma = 1e-5
 
-        # Cost and constraints
-        f_init = casadi.substitute(self.sqp["f"], self.opti.p, ocp_params)
-        g_init = casadi.substitute(self.sqp["g"], self.opti.p, ocp_params)
+        # Get current data
+        f, grad_f = self.f_data(current_x, ocp_params)
+        g, lbg, ubg = self.g_data(current_x, ocp_params)
 
-        current_f = casadi.substitute(f_init, self.opti.x, current_x)
-        current_f = casadi.substitute(current_f, self.sqp["x"], dx)
-        current_f = casadi.evalf(current_f)
+        g_metric = self._constraint_metric(g, lbg, ubg)
+        armijo_metric = grad_f.T @ dx
+        accepted = False
 
-        grad_f = casadi.gradient(f_init, self.opti.x)
-        grad_f = casadi.substitute(grad_f, self.opti.x, current_x)
-        grad_f = casadi.substitute(grad_f, self.sqp["x"], dx)
-        grad_f = casadi.evalf(grad_f)
+        while not accepted and a > a_min:
+            # Evaluate new solution
+            new_x = current_x + a * dx
+            new_f, _ = self.f_data(new_x, ocp_params)
+            new_g, lbg, ubg = self.g_data(new_x, ocp_params)
 
-        directional_derivative = grad_f.T @ dx
+            new_g_metric = self._constraint_metric(new_g, lbg, ubg)
+            if new_g_metric > g_max:
+                if new_g_metric < (1 - gamma) * g_metric:
+                    print("Line search: g metric high, but improving")
+                    accepted = True
+    
+            elif max(new_g_metric, g_metric) < g_min and armijo_metric < 0:
+                if new_f <= f + armijo_factor * armijo_metric:
+                    print("Line search: g metric low, f improving")
+                    accepted = True
 
-        finite_lbg_mask = np.isfinite(lbg)
-        finite_ubg_mask = np.isfinite(ubg)
+            elif new_f <= f - gamma * new_g_metric or new_g_metric < (1 - gamma) * g_metric:
+                print("Line search: f improving or g metric improving")
+                accepted = True
 
-        while a > min_a:
-            # Evaluate cost at the new point
-            sol_x = current_x + a * dx
-            sol_f = casadi.substitute(f_init, self.opti.x, sol_x)
-            sol_f = casadi.substitute(sol_f, self.sqp["x"], a * dx)
-            sol_f = casadi.evalf(sol_f)
+            a *= a_decay  # Reduce step size
+            f = new_f
+            g_metric = new_g_metric
 
-            # Evaluate constraints
-            sol_g = casadi.substitute(g_init, self.opti.x, sol_x)
-            sol_g = casadi.substitute(sol_g, self.sqp["x"], a * dx)
-            sol_g = casadi.evalf(sol_g)
-            
-            # Check Armijo condition
-            if sol_f <= current_f + c * a * directional_derivative:
-                # Check constraints
-                if (np.all(sol_g[finite_lbg_mask] >= lbg[finite_lbg_mask] - constraint_tol) and
-                    np.all(sol_g[finite_ubg_mask] <= ubg[finite_ubg_mask] + constraint_tol)):
-                    break
-                else:
-                    print("Constraint violated")
+        if accepted:
+            # Print info (need to adjust a)
+            print(f"a: {a / a_decay}, f: {f}, g metric: {g_metric}")
+            return new_x
 
-            a *= rho  # Reduce step size
-
-        # Final solution
-        if a > min_a:
-            print("Armijo converged with a: ", a)
-            return sol_x
         else:
-            print("Armijo failed to converge")
+            print("Line search: Didn't converge!")
             return current_x
+
+    def _constraint_metric(self, g, lbg, ubg):
+        lb_violations = np.maximum(0, lbg - g)
+        ub_violations = np.maximum(0, g - ubg)
+        violations = np.concatenate((lb_violations, ub_violations))
+
+        metric = np.linalg.norm(violations)
+        return metric
