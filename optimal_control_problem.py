@@ -156,7 +156,6 @@ class OptimalControlProblem:
                 vel_lin = vel[:3]
                 vel_diff = vel_lin - self.arm_vel_des
                 self.opti.subject_to(vel_diff == [0] * 3)
-                # obj += 0.5 * vel_diff.T @ vel_diff
 
                 # Force at end-effector (after all feet)
                 f_e = forces[3*n_feet:]
@@ -251,6 +250,7 @@ class OptimalControlProblem:
             hess_f, grad_f = casadi.hessian(f, x)
 
             # Store data functions
+            # TODO: Code generation
             self.sqp_data = casadi.Function("sqp_data", [x, p], [hess_f, grad_f, J_g, g, lbg, ubg])
             self.f_data = casadi.Function("f_data", [x, p], [f, grad_f])
             self.g_data = casadi.Function("g_data", [x, p], [g, lbg, ubg])
@@ -322,8 +322,9 @@ class OptimalControlProblem:
             end_time = time.time()
             self.solve_time = end_time - start_time
 
-            self._retract_qp_sol(current_x, retract_all)
+            self._retract_sqp_sol(current_x, retract_all)
 
+    # TODO: Combine both retract functions
     def _retract_opti_sol(self, retract_all=True):
         # Retract self.opti solution stored in self.sol
         self.DX_prev = [self.sol.value(dx) for dx in self.DX_opt]
@@ -339,8 +340,8 @@ class OptimalControlProblem:
             if not retract_all:
                 return
 
-    def _retract_qp_sol(self, sol_x, retract_all=True):
-        # Retract the given QP solution
+    def _retract_sqp_sol(self, sol_x, retract_all=True):
+        # Retract the given SQP solution
         self.DX_prev = []
         self.U_prev = []
         x_init = self.opti.value(self.x_init)
@@ -392,6 +393,7 @@ class OptimalControlProblem:
             new_g, lbg, ubg = self.g_data(new_x, ocp_params)
 
             new_g_metric = self._constraint_metric(new_g, lbg, ubg)
+
             if new_g_metric > g_max:
                 if new_g_metric < (1 - gamma) * g_metric:
                     print("Line search: g metric high, but improving")
@@ -420,6 +422,7 @@ class OptimalControlProblem:
             return current_x
 
     def _constraint_metric(self, g, lbg, ubg):
+        # TODO: Look into handling equality constraints differently
         lb_violations = np.maximum(0, lbg - g)
         ub_violations = np.maximum(0, g - ubg)
         violations = np.concatenate((lb_violations, ub_violations))
