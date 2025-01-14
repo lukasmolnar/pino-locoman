@@ -15,13 +15,14 @@ ocp_nodes = 8
 dt = 0.03
 
 # Only for B2G
-arm_f_des = np.array([0, 0, 0])
+arm_f_des = np.array([0, 0, -100])
 arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 
-# Compiled solver
+# Solver
+solver = "osqp"
 compile_solver = False
 load_compiled_solver = None
 
@@ -67,30 +68,32 @@ def main():
 
     else:
         ocp.update_initial_state(x_init)
-        ocp.update_gait_sequence(shift_idx=gait_idx)
-        ocp.init_solver(solver="fatrop", compile_solver=compile_solver)
+        ocp.update_contact_schedule(shift_idx=gait_idx)
+        ocp.init_solver(solver=solver, compile_solver=compile_solver)
         ocp.solve(retract_all=True)
+        print("Solve time (ms):", ocp.solve_time * 1000)
 
     print("Final h: ", ocp.hs[-1].T)
     print("Final q: ", ocp.qs[-1].T)
+
+    if debug:
+        for k in range(ocp_nodes):
+            q = ocp.qs[k]
+            h = ocp.hs[k]
+            u = ocp.us[k]
+            pin.computeAllTerms(model, data, q, np.zeros(model.nv))
+            print("k: ", k)
+            print("h: ", h.T)
+            print("q: ", q.T)
+            print("u: ", u.T)
+            print("com: ", data.com[0])
 
     # Visualize
     robot_instance.initViewer()
     robot_instance.loadViewerModel("pinocchio")
     for _ in range(50):
-        for k in range(ocp_nodes):
-            q = ocp.qs[k]
-            robot_instance.display(q)
-            if debug:
-                h = ocp.hs[k]
-                u = ocp.us[k]
-                pin.computeAllTerms(model, data, q, np.zeros(model.nv))
-                print("k: ", k)
-                print("h: ", h)
-                print("q: ", q)
-                print("u: ", u)
-                print("com: ", data.com[0])
-
+        for q in ocp.qs:
+            robot_instance.display(q)        
             time.sleep(dt)
 
 
