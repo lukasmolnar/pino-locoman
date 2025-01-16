@@ -15,10 +15,10 @@ dt = 0.03
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0, 0, 0])
+arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([0, 0, 0, 0, 0, 0])
+com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 
 # Compiled solver
 solver = "osqp"
@@ -55,7 +55,7 @@ def main():
     gait_idx = 0
 
     ocp.update_initial_state(x_init)
-    ocp.update_gait_sequence(shift_idx=gait_idx)
+    ocp.update_contact_schedule(shift_idx=gait_idx)
     ocp.init_solver(solver=solver, compile_solver=compile_solver)
     ocp.solve(retract_all=True)
 

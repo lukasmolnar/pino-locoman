@@ -36,16 +36,25 @@ class OptimalControlRNEA:
         self.n_contact_feet = self.gait_sequence.n_contacts
 
         # Weights
-        Q_diag = np.concatenate((
-            [100] * 3,  # base pos
+        Q_pos_diag = np.concatenate((
+            [0] * 2,  # base x/y
+            [1000],  # base z
             [100] * 3,  # base rot
             [1] * self.nj,  # joints
         ))
-        Q_diag = np.concatenate((Q_diag, Q_diag))  # pos and vel
-        R_diag = np.concatenate((
-            [1e-2] * self.nj,  # joint torques
-            [1e-2] * self.nf,  # forces
+        Q_vel_diag = np.concatenate((
+            [1000] * 3,  # base linear
+            [100] * 3,  # base angular
+            [1] * self.nj,
         ))
+        Q_diag = np.concatenate((Q_pos_diag, Q_vel_diag))
+        R_diag = np.concatenate((
+            [1e-4] * self.nj,  # joint torques
+        ))
+        for _ in range(self.n_feet):
+            R_diag = np.concatenate((R_diag, [1, 1, 1e-2]))  # forces
+        if self.arm_ee_id:
+            R_diag = np.concatenate((R_diag, [0] * 3))  # arm forces (added to constraints)
         Q = np.diag(Q_diag)
         R = np.diag(R_diag)
 
@@ -67,7 +76,6 @@ class OptimalControlRNEA:
 
         # Parameters
         self.x_init = self.opti.parameter(nx)  # initial state
-        self.gait_idx = self.opti.parameter()  # where we are within the gait
         self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes)  # gait schedule: contacts / bezier indices
         self.com_goal = self.opti.parameter(6)  # linear + angular momentum
         self.arm_f_des = self.opti.parameter(3)  # force at end-effector
@@ -78,7 +86,6 @@ class OptimalControlRNEA:
         x_des = casadi.vertcat(robot.q0, v_des)
         dx_des = self.dyn.state_difference()(self.x_init, x_des)
         f_des = np.tile([0, 0, 9.81 * self.mass / self.n_contact_feet], self.n_feet)
-        # f_des = np.zeros(3 * self.n_feet)
         if self.arm_ee_id:
             # TODO: Check if arm force = 0 is ok (it is constrained later)
             f_des = np.concatenate((f_des, np.zeros(3)))
@@ -207,10 +214,9 @@ class OptimalControlRNEA:
     def update_initial_state(self, x_init):
         self.opti.set_value(self.x_init, x_init)
 
-    def update_gait_sequence(self, shift_idx=0):
+    def update_contact_schedule(self, shift_idx=0):
         contact_schedule = self.gait_sequence.shift_contact_schedule(shift_idx)
         self.opti.set_value(self.contact_schedule, contact_schedule[:, :self.nodes])
-        self.opti.set_value(self.gait_idx, shift_idx)
 
     def set_com_goal(self, com_goal):
         self.opti.set_value(self.com_goal, com_goal)
@@ -331,7 +337,7 @@ class OptimalControlRNEA:
             start_time = time.time()
 
             # TODO: Termination condition
-            for _ in range(10):
+            for _ in range(5):
                 # OSQP
                 hess_f, grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, ocp_params)
                 P = sparse.csc_matrix(hess_f)

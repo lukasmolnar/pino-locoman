@@ -8,26 +8,26 @@ from ocp_rnea import OptimalControlRNEA
 # Problem parameters
 # robot = B2(reference_pose="standing")
 robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
-gait_type = "stand"
+gait_type = "trot"
 gait_nodes = 14
 ocp_nodes = 8
 dt = 0.03
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0, 0, 0])
+arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([0, 0, 0, 0, 0, 0])
+com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 
 # MPC
-mpc_loops = 10
+mpc_loops = 20
 
 # Compiled solver
 compile_solver = False
 load_compiled_solver = None
 
-debug = False  # print info
+debug = True  # print info
 
 
 def mpc_loop(ocp, robot_instance, q0, N):
@@ -39,7 +39,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
     for k in range(N):
         ocp.update_initial_state(x_init)
-        ocp.update_gait_sequence(shift_idx=k)
+        ocp.update_contact_schedule(shift_idx=k)
         ocp.warm_start()
         ocp.solve(retract_all=False)
         solve_times.append(ocp.solve_time)
@@ -82,7 +82,7 @@ def main():
     ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
 
     if debug:
-        for k in range(ocp_nodes):
+        for k in range(len(ocp.qs)):
             q = ocp.qs[k].T
             v = ocp.vs[k].T
             tau = ocp.taus[k].T
@@ -91,7 +91,7 @@ def main():
             print("v: ", v)
             print("tau: ", tau)
 
-            if k < ocp_nodes - 1:
+            if k < len(ocp.vs) - 1:
                 v_next = ocp.vs[k + 1].T
             else:
                 break
