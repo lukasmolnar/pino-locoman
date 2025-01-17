@@ -14,14 +14,14 @@ ocp_nodes = 8
 dt = 0.03
 
 # Only for B2G
-arm_f_des = np.array([0, 0, 0])
+arm_f_des = np.array([0, 0, -100])
 arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 
 # MPC
-mpc_loops = 20
+mpc_loops = 50
 
 # Compiled solver
 compile_solver = False
@@ -83,36 +83,36 @@ def main():
 
     if debug:
         for k in range(len(ocp.qs)):
-            q = ocp.qs[k].T
-            v = ocp.vs[k].T
-            tau = ocp.taus[k].T
-            forces = ocp.fs[k].T
-            print("q: ", q)
-            print("v: ", v)
-            print("tau: ", tau)
+            q = ocp.qs[k]
+            v = ocp.vs[k]
+            tau = ocp.taus[k]
+            forces = ocp.fs[k]
+            print("q: ", q.T)
+            print("v: ", v.T)
+            print("tau: ", tau.T)
 
             if k < len(ocp.vs) - 1:
-                v_next = ocp.vs[k + 1].T
+                v_next = ocp.vs[k + 1]
             else:
                 break
             a = (v_next - v) / dt
-            print("a: ", a)
 
             # RNEA
-            pin.framesForwardKinematics(model, data, q.flatten())
+            pin.framesForwardKinematics(model, data, q)
             f_ext = [pin.Force(np.zeros(6)) for _ in range(model.njoints)]
             for idx, frame_id in enumerate(robot.ee_ids):
                 joint_id = model.frames[frame_id].parentJoint
                 translation_joint_to_contact_frame = model.frames[frame_id].placement.translation
                 rotation_world_to_joint_frame = data.oMi[joint_id].rotation.T
                 f_world = forces[idx * 3 : (idx + 1) * 3]
+                print(f"force {frame_id}: {f_world}")
+
                 f_lin = rotation_world_to_joint_frame @ f_world
                 f_ang = np.cross(translation_joint_to_contact_frame, f_lin)
                 f = np.concatenate((f_lin, f_ang))
                 f_ext[joint_id] = pin.Force(f)
-                print("f_ext: ", f)
-            tau_rnea = pin.rnea(model, data, q.flatten(), v.flatten(), a.flatten(), f_ext)
-            print("tau rnea: ", tau_rnea)
+
+            tau_rnea = pin.rnea(model, data, q, v, a, f_ext)
 
             tau_total = np.concatenate((np.zeros(6), tau))
             print("tau gap: ", tau_total - tau_rnea)

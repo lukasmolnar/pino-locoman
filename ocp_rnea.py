@@ -50,11 +50,8 @@ class OptimalControlRNEA:
         Q_diag = np.concatenate((Q_pos_diag, Q_vel_diag))
         R_diag = np.concatenate((
             [1e-4] * self.nj,  # joint torques
+            [1e-2] * self.nf,  # contact forces
         ))
-        for _ in range(self.n_feet):
-            R_diag = np.concatenate((R_diag, [1, 1, 1e-2]))  # forces
-        if self.arm_ee_id:
-            R_diag = np.concatenate((R_diag, [0] * 3))  # arm forces (added to constraints)
         Q = np.diag(Q_diag)
         R = np.diag(R_diag)
 
@@ -259,7 +256,16 @@ class OptimalControlRNEA:
                 "bound_push": 1e-7,
             }
             self.opti.solver(solver, opts)
-        
+
+            # Code generation
+            if compile_solver:
+                solver_function = self.opti.to_function(
+                    "compiled_solver",
+                    [self.x_init, self.contact_schedule, self.com_goal, self.arm_f_des, self.arm_vel_des],  # parameters
+                    [self.DX_opt[1], self.U_opt[0]]  # output
+                )
+                solver_function.generate("compiled_solver.c")
+
         elif solver == "osqp":
             # Get all info from self.opti
             x = self.opti.x
@@ -272,37 +278,21 @@ class OptimalControlRNEA:
             J_g = casadi.jacobian(g, x)
             hess_f, grad_f = casadi.hessian(f, x)
 
+            # Store data functions
+            # TODO: Code generation
             self.sqp_data = casadi.Function("sqp_data", [x, p], [hess_f, grad_f, J_g, g, lbg, ubg])
             self.f_data = casadi.Function("f_data", [x, p], [f, grad_f])
             self.g_data = casadi.Function("g_data", [x, p], [g, lbg, ubg])
 
-            # OSQP
+            # OSQP options
             self.osqp_opts = {
-                "max_iter": 1000,
+                "max_iter": 100,
                 "alpha": 1.4,
                 "rho": 2e-2,
             }
 
-            # Cost and constraint data for line search
-            sqp_x = casadi.MX.sym("sqp_x", x.size())
-            sqp_f = 0.5 * sqp_x.T @ hess_f @ sqp_x + grad_f.T @ sqp_x
-            sqp_g = g + J_g @ sqp_x
-
-            sqp_grad_f = casadi.gradient(sqp_f, sqp_x)
-
-            self.line_search_data = casadi.Function("line_search_data", [sqp_x, x, p], [sqp_f, sqp_grad_f, sqp_g])
-
         else:
             raise ValueError(f"Solver {solver} not supported")
-
-        # Code generation
-        if compile_solver:
-            solver_function = self.opti.to_function(
-                "compiled_solver",
-                [self.x_init, self.contact_schedule, self.com_goal, self.arm_f_des, self.arm_vel_des],  # parameters
-                [self.DX_opt[1], self.U_opt[0]]  # output
-            )
-            solver_function.generate("compiled_solver.c")
 
     def solve(self, retract_all=True):
         if self.solver_type == "fatrop":
@@ -337,7 +327,7 @@ class OptimalControlRNEA:
             start_time = time.time()
 
             # TODO: Termination condition
-            for _ in range(5):
+            for _ in range(3):
                 # OSQP
                 hess_f, grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, ocp_params)
                 P = sparse.csc_matrix(hess_f)

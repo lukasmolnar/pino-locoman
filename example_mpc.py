@@ -109,9 +109,6 @@ def main():
     ocp.set_arm_task(arm_f_des, arm_vel_des)
     ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
 
-    print("Final h: ", ocp.hs[-1].T)
-    print("Final q: ", ocp.qs[-1].T)
-
     if debug:
         for k in range(len(ocp.qs)):
             q = ocp.qs[k]

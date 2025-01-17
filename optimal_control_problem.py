@@ -251,9 +251,9 @@ class OptimalControlProblem:
 
             # Store data functions
             # TODO: Code generation
-            self.sqp_data = casadi.Function("sqp_data", [x, p], [hess_f, grad_f, J_g, g, lbg, ubg])
-            self.f_data = casadi.Function("f_data", [x, p], [f, grad_f])
-            self.g_data = casadi.Function("g_data", [x, p], [g, lbg, ubg])
+            self.sqp_data = casadi.Function("sqp_data", [x, p], [hess_f, grad_f, J_g, g, lbg, ubg]).expand()
+            self.f_data = casadi.Function("f_data", [x, p], [f, grad_f]).expand()
+            self.g_data = casadi.Function("g_data", [x, p], [g, lbg, ubg]).expand()
 
             # OSQP options
             self.osqp_opts = {
@@ -261,6 +261,20 @@ class OptimalControlProblem:
                 "alpha": 1.4,
                 "rho": 2e-2,
             }
+
+            # OSQP formulation with dummy data
+            P = sparse.csc_matrix(np.eye(hess_f.shape[0]))  # diagonal
+            A = sparse.csc_matrix(np.ones(J_g.shape))  # dense
+            q = np.ones(grad_f.shape)
+            l = -np.ones(g.shape)
+            u = np.ones(g.shape)
+
+            self.osqp_prob = osqp.OSQP()
+            self.osqp_prob.setup(P, q, A, l, u, **self.osqp_opts)
+            # self.osqp_prob.codegen(
+            #     "codegen/osqp",
+            #     parameters="matrices",
+            # )
 
         else:
             raise ValueError(f"Solver {solver} not supported")
@@ -298,18 +312,24 @@ class OptimalControlProblem:
             start_time = time.time()
 
             # TODO: How many iterations?
-            for _ in range(5):
+            for _ in range(3):
                 # OSQP
                 hess_f, grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, ocp_params)
-                P = sparse.csc_matrix(hess_f)
-                A = sparse.csc_matrix(J_g)
                 q = np.array(grad_f)
                 l = np.array(lbg - g)
                 u = np.array(ubg - g)
 
-                # TODO: Possibly use update
+                # Redifine OSQP
+                P = sparse.csc_matrix(hess_f)
+                A = sparse.csc_matrix(J_g)
                 self.osqp_prob = osqp.OSQP()
                 self.osqp_prob.setup(P, q, A, l, u, **self.osqp_opts)
+
+                # Update OSQP
+                # P_data = np.diag(hess_f)  # diagonal
+                # A_data = np.array(J_g).flatten(order="F")  # dense, flattened columns
+                # self.osqp_prob.update(Px=P_data, q=q, Ax=A_data, l=l, u=u)
+
                 sol_dx = self.osqp_prob.solve().x
 
                 # Armijo line search
