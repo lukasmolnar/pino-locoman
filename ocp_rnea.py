@@ -5,10 +5,10 @@ import osqp
 from scipy import sparse
 
 from helpers import *
-from centroidal_dynamics import CentroidalDynamics
+from dynamics_rnea import DynamicsRNEA
 
 
-class OptimalControlProblem:
+class OCP_RNEA:
     def __init__(
             self,
             robot,
@@ -20,25 +20,48 @@ class OptimalControlProblem:
         self.model = robot.model
         self.data = robot.data
         self.gait_sequence = robot.gait_sequence
+        self.nq = robot.nq
+        self.nv = robot.nv
+        self.nf = robot.nf
+        self.nj = robot.nj
+
         self.nodes = nodes
+        self.nf = robot.nf
 
         self.mass = self.data.mass[0]
         self.dt = self.gait_sequence.dt
         self.ee_ids = robot.ee_ids
         self.arm_ee_id = robot.arm_ee_id
-    
-        Q = robot.Q
-        R = robot.R
-        n_feet = len(self.ee_ids)
-        n_contact_feet = self.gait_sequence.n_contacts
+        self.n_feet = len(self.ee_ids)
+        self.n_contact_feet = self.gait_sequence.n_contacts
+
+        # Weights
+        Q_pos_diag = np.concatenate((
+            [0] * 2,  # base x/y
+            [1000],  # base z
+            [100] * 3,  # base rot
+            [1] * self.nj,  # joints
+        ))
+        Q_vel_diag = np.concatenate((
+            [1000] * 3,  # base linear
+            [100] * 3,  # base angular
+            [1] * self.nj,
+        ))
+        Q_diag = np.concatenate((Q_pos_diag, Q_vel_diag))
+        R_diag = np.concatenate((
+            [1e-4] * self.nj,  # joint torques
+            [1e-2] * self.nf,  # contact forces
+        ))
+        Q = np.diag(Q_diag)
+        R = np.diag(R_diag)
 
         # State and inputs to optimize
-        self.dx_opt_indices = robot.dx_opt_indices
-        self.ndx_opt = len(self.dx_opt_indices)
-        self.nu_opt = robot.nf + robot.nj  # forces + joint velocities
+        nx = self.nq + self.nv  # positions + velocities
+        self.ndx_opt = self.nv * 2  # position deltas + velocities
+        self.nu_opt = self.nj + self.nf  # joint torques + forces
 
         # Dynamics
-        self.dyn = CentroidalDynamics(self.model, self.mass, self.ee_ids, self.dx_opt_indices)
+        self.dyn = DynamicsRNEA(self.model, self.mass, self.ee_ids)
 
         # Decision variables
         self.DX_opt = []
@@ -49,21 +72,21 @@ class OptimalControlProblem:
         self.DX_opt.append(self.opti.variable(self.ndx_opt))
 
         # Parameters
-        self.x_init = self.opti.parameter(robot.nx)  # initial state
-        self.contact_schedule = self.opti.parameter(n_feet, self.nodes)  # gait schedule: contacts / bezier indices
+        self.x_init = self.opti.parameter(nx)  # initial state
+        self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes)  # gait schedule: contacts / bezier indices
         self.com_goal = self.opti.parameter(6)  # linear + angular momentum
         self.arm_f_des = self.opti.parameter(3)  # force at end-effector
         self.arm_vel_des = self.opti.parameter(3)  # velocity at end-effector
 
         # Desired state and input
-        x_des = casadi.vertcat(self.com_goal, robot.q0)
+        v_des = casadi.vertcat(self.com_goal, [0] * self.nj)
+        x_des = casadi.vertcat(robot.q0, v_des)
         dx_des = self.dyn.state_difference()(self.x_init, x_des)
-        dx_des = dx_des[self.dx_opt_indices]
-        f_des = np.tile([0, 0, 9.81 * self.mass / n_contact_feet], n_feet)
-        if robot.arm_ee_id:
+        f_des = np.tile([0, 0, 9.81 * self.mass / self.n_contact_feet], self.n_feet)
+        if self.arm_ee_id:
             # TODO: Check if arm force = 0 is ok (it is constrained later)
             f_des = np.concatenate((f_des, np.zeros(3)))
-        u_des = np.concatenate((f_des, np.zeros(robot.nj)))
+        u_des = np.concatenate((np.zeros(robot.nj), f_des))  # zero torque
 
         # OBJECTIVE
         obj = 0
@@ -83,27 +106,32 @@ class OptimalControlProblem:
         obj += 0.5 * dx.T @ Q @ dx
 
         # CONSTRAINTS
-        self.opti.subject_to(self.DX_opt[0] == [0] * self.ndx_opt)
+        self.opti.subject_to(self.DX_opt[0][:self.nv] == [0] * self.nv)  # initial position
+        # self.opti.subject_to(self.DX_opt[0] == [0] * 2 * self.nv)  # initial velocity
 
         for i in range(self.nodes):
             # Gather all state and input info
             dx_opt = self.DX_opt[i]
+            dq = dx_opt[:self.nv]  # delta q, not v
             x = self.dyn.state_integrate()(self.x_init, dx_opt)
             u = self.U_opt[i]
-            h = x[:6]
-            q = x[6:]
-            forces = u[:robot.nf]
-            dq_j = u[robot.nf:]
-            dq_b = self.dyn.get_base_velocity()(h, q, dq_j)
-            dq = casadi.vertcat(dq_b, dq_j)
+            q = x[:self.nq]
+            v = x[self.nq:]
+            tau_j = u[:self.nj]
+            forces = u[self.nj:]
 
             # Dynamics constraint
             dx_next = self.DX_opt[i+1]
-            dx_dyn = self.dyn.centroidal_dynamics(self.arm_ee_id)(x, u, dq_b)
-            dx_dyn = dx_dyn[self.dx_opt_indices]
-            self.opti.subject_to(dx_next == dx_opt + dx_dyn * self.dt)
+            dq_next = dx_next[:self.nv]
+            x_next = self.dyn.state_integrate()(self.x_init, dx_next)
+            v_next = x_next[self.nq:]
+            self.opti.subject_to(dq_next == dq + 0.5 * (v + v_next) * self.dt)
 
-            # TODO: Check if constraint q_next = q + dq * dt is necessary
+            # RNEA constraint
+            a = (v_next - v) / self.dt  # finite difference
+            tau_rnea = self.dyn.rnea_dynamics(self.arm_ee_id)(q, v, a, forces)
+            self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
+            self.opti.subject_to(tau_rnea[6:] == tau_j)  # joints
 
             # Contact and swing constraints
             for idx, frame_id in enumerate(self.ee_ids):
@@ -121,7 +149,7 @@ class OptimalControlProblem:
                 self.opti.subject_to(in_contact * mu**2 * f_normal**2 >= in_contact * f_tangent_square)
 
                 # Zero end-effector velocity (linear)
-                vel = self.dyn.get_frame_velocity(frame_id)(q, dq)
+                vel = self.dyn.get_frame_velocity(frame_id)(q, v)
                 vel_lin = vel[:3]
                 self.opti.subject_to(in_contact * vel_lin == [0] * 3)
 
@@ -135,13 +163,13 @@ class OptimalControlProblem:
                 self.opti.subject_to((1 - in_contact) * vel_diff == 0)
 
                 # Humanoid
-                if n_feet == 2:
+                if self.n_feet == 2:
                     # Flat feet
                     vel_ang = vel[3:]
                     self.opti.subject_to(vel_ang == [0] * 3)
 
             # Humanoid
-            if n_feet == 2:
+            if self.n_feet == 2:
                 # Minimum distance between feet
                 min_dist = 0.095  # standing pose is 0.1
                 foot_0 = self.dyn.get_frame_position(self.ee_ids[0])(q)
@@ -152,13 +180,13 @@ class OptimalControlProblem:
             # Arm task
             if self.arm_ee_id:
                 # Zero end-effector velocity (linear and angular)
-                vel = self.dyn.get_frame_velocity(self.arm_ee_id)(q, dq)
+                vel = self.dyn.get_frame_velocity(self.arm_ee_id)(q, v)
                 vel_lin = vel[:3]
                 vel_diff = vel_lin - self.arm_vel_des
                 self.opti.subject_to(vel_diff == [0] * 3)
 
                 # Force at end-effector (after all feet)
-                f_e = forces[3*n_feet:]
+                f_e = forces[3*self.n_feet:]
                 self.opti.subject_to(f_e == self.arm_f_des)
 
             # Warm start
@@ -175,9 +203,10 @@ class OptimalControlProblem:
         self.DX_prev = None
         self.U_prev = None
         self.lam_g = None
-        self.hs = []
         self.qs = []
-        self.us = []
+        self.vs = []
+        self.taus = []
+        self.fs = []
 
     def update_initial_state(self, x_init):
         self.opti.set_value(self.x_init, x_init)
@@ -297,8 +326,8 @@ class OptimalControlProblem:
             current_x = self.opti.value(self.opti.x, self.opti.initial())
             start_time = time.time()
 
-            # TODO: How many iterations?
-            for _ in range(5):
+            # TODO: Termination condition
+            for _ in range(3):
                 # OSQP
                 hess_f, grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, ocp_params)
                 P = sparse.csc_matrix(hess_f)
@@ -324,7 +353,6 @@ class OptimalControlProblem:
 
             self._retract_sqp_sol(current_x, retract_all)
 
-    # TODO: Combine both retract functions
     def _retract_opti_sol(self, retract_all=True):
         # Retract self.opti solution stored in self.sol
         self.DX_prev = [self.sol.value(dx) for dx in self.DX_opt]
@@ -333,15 +361,16 @@ class OptimalControlProblem:
 
         for dx_sol, u_sol in zip(self.DX_prev, self.U_prev):
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
-            self.hs.append(np.array(x_sol[:6]))
-            self.qs.append(np.array(x_sol[6:]))
-            self.us.append(np.array(u_sol))
+            self.qs.append(np.array(x_sol[:self.nq]))
+            self.vs.append(np.array(x_sol[self.nq:]))
+            self.taus.append(np.array(u_sol[:self.nj]))
+            self.fs.append(np.array(u_sol[self.nj:]))
 
             if not retract_all:
                 return
 
     def _retract_sqp_sol(self, sol_x, retract_all=True):
-        # Retract the given SQP solution
+        # Retract the given QP solution
         self.DX_prev = []
         self.U_prev = []
         x_init = self.opti.value(self.x_init)
@@ -354,19 +383,22 @@ class OptimalControlProblem:
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
             self.DX_prev.append(np.array(dx_sol))
             self.U_prev.append(np.array(u_sol))
-
+            
             if i == 0 or retract_all:
-                self.hs.append(np.array(x_sol[:6]))
-                self.qs.append(np.array(x_sol[6:]))
-                self.us.append(np.array(u_sol))
+                self.qs.append(np.array(x_sol[:self.nq]))
+                self.vs.append(np.array(x_sol[self.nq:]))
+                self.taus.append(np.array(u_sol[:self.nj]))
+                self.fs.append(np.array(u_sol[self.nj:]))
 
         dx_last = sol_x[self.nodes*nx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)
         self.DX_prev.append(np.array(dx_last))
 
         if retract_all:
-            self.hs.append(np.array(x_last[:6]))
-            self.qs.append(np.array(x_last[6:]))
+            self.qs.append(np.array(x_last[:self.nq]))
+            self.vs.append(np.array(x_last[self.nq:]))
+            self.taus.append(np.array(u_sol[:self.nj]))
+            self.fs.append(np.array(u_sol[self.nj:]))
 
     def _armijo_line_search(self, current_x, dx, ocp_params):
         # Params
@@ -393,7 +425,6 @@ class OptimalControlProblem:
             new_g, lbg, ubg = self.g_data(new_x, ocp_params)
 
             new_g_metric = self._constraint_metric(new_g, lbg, ubg)
-
             if new_g_metric > g_max:
                 if new_g_metric < (1 - gamma) * g_metric:
                     print("Line search: g metric high, but improving")
@@ -422,7 +453,6 @@ class OptimalControlProblem:
             return current_x
 
     def _constraint_metric(self, g, lbg, ubg):
-        # TODO: Look into handling equality constraints differently
         lb_violations = np.maximum(0, lbg - g)
         ub_violations = np.maximum(0, g - ubg)
         violations = np.concatenate((lb_violations, ub_violations))

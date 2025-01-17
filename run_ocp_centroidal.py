@@ -4,7 +4,7 @@ import pinocchio as pin
 import casadi
 
 from helpers import *
-from optimal_control_problem import OptimalControlProblem
+from ocp_centroidal import OCP_Centroidal
 
 # Problem parameters
 # robot = B2(reference_pose="standing")
@@ -26,7 +26,7 @@ solver = "osqp"
 compile_solver = False
 load_compiled_solver = None
 
-debug = False  # print info
+debug = True  # print info
 
 
 def main():
@@ -45,7 +45,7 @@ def main():
     pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
     # Setup OCP
-    ocp = OptimalControlProblem(
+    ocp = OCP_Centroidal(
         robot=robot,
         nodes=ocp_nodes,
     )
@@ -73,20 +73,52 @@ def main():
         ocp.solve(retract_all=True)
         print("Solve time (ms):", ocp.solve_time * 1000)
 
-    print("Final h: ", ocp.hs[-1].T)
-    print("Final q: ", ocp.qs[-1].T)
-
     if debug:
         for k in range(ocp_nodes):
             q = ocp.qs[k]
             h = ocp.hs[k]
             u = ocp.us[k]
-            pin.computeAllTerms(model, data, q, np.zeros(model.nv))
+
+            forces = u[:robot.nf]
+            v_j = u[robot.nf:]
+            v_b = ocp.dyn.get_base_velocity()(h, q, v_j)
+            v_b = np.array(v_b).flatten()
+            v = np.concatenate((v_b, v_j))
+            pin.computeAllTerms(model, data, q, v)
+
             print("k: ", k)
             print("h: ", h.T)
             print("q: ", q.T)
-            print("u: ", u.T)
-            print("com: ", data.com[0])
+            print("h true: ", data.hg / data.mass[0])
+
+            # RNEA
+            if k < ocp_nodes - 1:
+                h_next = ocp.hs[k + 1]
+                q_next = ocp.qs[k + 1]
+                v_j_next = ocp.us[k + 1][robot.nf:]
+                v_b_next = ocp.dyn.get_base_velocity()(h_next, q_next, v_j_next)
+                v_b_next = np.array(v_b_next).flatten()
+                v_next = np.concatenate((v_b_next, v_j_next))
+            else:
+                break
+            a = (v_next - v) / dt
+
+            pin.framesForwardKinematics(model, data, q)
+            f_ext = [pin.Force(np.zeros(6)) for _ in range(model.njoints)]
+            for idx, frame_id in enumerate(robot.ee_ids):
+                joint_id = model.frames[frame_id].parentJoint
+                translation_joint_to_contact_frame = model.frames[frame_id].placement.translation
+                rotation_world_to_joint_frame = data.oMi[joint_id].rotation.T
+                f_world = forces[idx * 3 : (idx + 1) * 3]
+                print(f"force {frame_id}: {f_world}")
+
+                f_lin = rotation_world_to_joint_frame @ f_world
+                f_ang = np.cross(translation_joint_to_contact_frame, f_lin)
+                f = np.concatenate((f_lin, f_ang))
+                f_ext[joint_id] = pin.Force(f)
+
+            tau_rnea = pin.rnea(model, data, q, v, a, f_ext)
+            print("tau rnea: ", tau_rnea)
 
     # Visualize
     robot_instance.initViewer()

@@ -4,7 +4,7 @@ import pinocchio as pin
 import casadi
 
 from helpers import *
-from optimal_control_problem import OptimalControlProblem
+from ocp_centroidal import OCP_Centroidal
 
 # Problem parameters
 # robot = B2(reference_pose="standing")
@@ -101,16 +101,13 @@ def main():
     robot_instance.display(q0)
 
     # Setup OCP
-    ocp = OptimalControlProblem(
+    ocp = OCP_Centroidal(
         robot=robot,
         nodes=ocp_nodes,
     )
     ocp.set_com_goal(com_goal)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
     ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
-
-    print("Final h: ", ocp.hs[-1].T)
-    print("Final q: ", ocp.qs[-1].T)
 
     if debug:
         for k in range(len(ocp.qs)):

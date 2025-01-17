@@ -12,23 +12,51 @@ conda activate pino
 conda install pinocchio meshcat-python -c conda-forge
 ```
 
+If using OSQP solver:
+
+```bash
+conda install osqp -c conda-forge
+```
+
 ## Examples
 
-- OCP and MPC: Track desired COM momentum (linear + angular). Gait sequence is parametrized, swing legs track bezier curves in z-direction and optimize in x/y-directions.
+Run OCP and MPC examples with:
 
-### Optimal Control Problem
+```bash
+python run_mpc_centroidal.py
+```
 
-- Uses casadi Opti stack with MX expressions. Pinocchio uses SX expressions, which are converted to MX using casadi Functions.
-- Solver: FATROP with auto-structure detection
-- Code generation: Compile solver function (see codegen folder)
+In the example files define:
+- Desired COM momentum (linear + angular)
+- Desired arm end-effector force + linear velocity
+- Desired gait type and period. The gait sequence is then parametrized, swing legs track bezier curves in z-direction and optimize in x/y-directions.
+
+
+## Optimal Control Problem
+
+The OCP is formulated with the casadi Opti stack. This uses MX expressions, whereas Pinocchio uses SX expressions. For this reason all relevant Pinocchio expressions used in the constraints are converted to MX using casadi Functions.
+
+There are two options for what dynamics to use in the OCP:
 
 ### Centroidal Dynamics
 
-- State: Centroidal momentum, generalized coordinates
-- Input: Ground reaction forces, joint velocities (base velocity is calculated through the centroidal momentum matrix)
+- States: Centroidal momentum, generalized coordinates
+- Inputs: Ground reaction forces, joint velocities (base velocity is calculated through the centroidal momentum matrix)
 
-## Old Examples
+### RNEA Dynamics
 
-- COM: Move center of mass up and down, while arm end effector position remains constant.
-- IK: Given desired arm end effector position and rotation, compute whole-body joint angles.
-- Casadi: Formulate optimization problem in joint space (states: joint positions, inputs: joint velocities). Track desired goal state.
+- States: Generalized coordinates and velocities
+- Inputs: Ground reaction forces, joint torques
+
+
+## Solvers
+
+### Fatrop
+
+Uses auto-structure detection. This currently only works on the centroidal dynamics model, because the RNEA dynamics constraints violate the diagonal structure assumed by Fatrop.
+
+Code generation: The Fatrop solver can be exported to a C file and compiled to a shared library (see codegen folder).
+
+### OSQP
+
+The Opti formulation is converted to a Sequential Quadruatic Program (SQP). Each SQP iteration is solved with OSQP, and the solution is updated using the Armijo line-search method. This works on both centroidal and RNEA dynamics models.

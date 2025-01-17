@@ -4,7 +4,7 @@ import pinocchio.casadi as cpin
 import casadi
 
 
-class CentroidalDynamics:
+class DynamicsCentroidal:
     def __init__(
             self,
             model,
