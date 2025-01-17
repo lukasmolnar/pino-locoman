@@ -8,7 +8,7 @@ from helpers import *
 from dynamics_rnea import DynamicsRNEA
 
 
-class OptimalControlRNEA:
+class OCP_RNEA:
     def __init__(
             self,
             robot,

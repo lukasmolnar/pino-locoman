@@ -5,10 +5,10 @@ import osqp
 from scipy import sparse
 
 from helpers import *
-from centroidal_dynamics import CentroidalDynamics
+from dynamics_centroidal import DynamicsCentroidal
 
 
-class OptimalControlProblem:
+class OCP_Centroidal:
     def __init__(
             self,
             robot,
@@ -38,7 +38,7 @@ class OptimalControlProblem:
         self.nu_opt = robot.nf + robot.nj  # forces + joint velocities
 
         # Dynamics
-        self.dyn = CentroidalDynamics(self.model, self.mass, self.ee_ids, self.dx_opt_indices)
+        self.dyn = DynamicsCentroidal(self.model, self.mass, self.ee_ids, self.dx_opt_indices)
 
         # Decision variables
         self.DX_opt = []

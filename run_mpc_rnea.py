@@ -3,7 +3,7 @@ import numpy as np
 import pinocchio as pin
 
 from helpers import *
-from ocp_rnea import OptimalControlRNEA
+from ocp_rnea import OCP_RNEA
 
 # Problem parameters
 # robot = B2(reference_pose="standing")
@@ -20,12 +20,37 @@ arm_vel_des = np.array([0.1, 0, 0])
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 
+# MPC
+mpc_loops = 50
+
 # Compiled solver
-solver = "osqp"
 compile_solver = False
 load_compiled_solver = None
 
 debug = True  # print info
+
+
+def mpc_loop(ocp, robot_instance, q0, N):
+    x_init = np.concatenate((q0, np.zeros(robot_instance.model.nv)))
+    solve_times = []
+
+    # Initialize solver
+    ocp.init_solver(solver="osqp", compile_solver=compile_solver)
+
+    for k in range(N):
+        ocp.update_initial_state(x_init)
+        ocp.update_contact_schedule(shift_idx=k)
+        ocp.warm_start()
+        ocp.solve(retract_all=False)
+        solve_times.append(ocp.solve_time)
+
+        x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+        robot_instance.display(ocp.qs[-1])  # Display last q
+
+    print("Avg solve time (ms): ", np.average(solve_times) * 1000)
+    print("Std solve time (ms): ", np.std(solve_times) * 1000)
+
+    return ocp
 
 
 def main():
@@ -43,24 +68,21 @@ def main():
 
     pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
+    robot_instance.initViewer()
+    robot_instance.loadViewerModel("pinocchio")
+    robot_instance.display(q0)
+
     # Setup OCP
-    ocp = OptimalControlRNEA(
+    ocp = OCP_RNEA(
         robot=robot,
         nodes=ocp_nodes,
     )
     ocp.set_com_goal(com_goal)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
-
-    x_init = np.concatenate((q0, np.zeros(model.nv)))
-    gait_idx = 0
-
-    ocp.update_initial_state(x_init)
-    ocp.update_contact_schedule(shift_idx=gait_idx)
-    ocp.init_solver(solver=solver, compile_solver=compile_solver)
-    ocp.solve(retract_all=True)
+    ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
 
     if debug:
-        for k in range(ocp_nodes):
+        for k in range(len(ocp.qs)):
             q = ocp.qs[k]
             v = ocp.vs[k]
             tau = ocp.taus[k]
@@ -69,7 +91,7 @@ def main():
             print("v: ", v.T)
             print("tau: ", tau.T)
 
-            if k < ocp_nodes - 1:
+            if k < len(ocp.vs) - 1:
                 v_next = ocp.vs[k + 1]
             else:
                 break
@@ -91,18 +113,13 @@ def main():
                 f_ext[joint_id] = pin.Force(f)
 
             tau_rnea = pin.rnea(model, data, q, v, a, f_ext)
-            print("tau rnea: ", tau_rnea)
 
             tau_total = np.concatenate((np.zeros(6), tau))
             print("tau gap: ", tau_total - tau_rnea)
 
-    print("Solve time (ms):", ocp.solve_time * 1000)
-
     # Visualize
-    robot_instance.initViewer()
-    robot_instance.loadViewerModel("pinocchio")
-    for _ in range(100):
-        for k in range(ocp_nodes):
+    for _ in range(50):
+        for k in range(len(ocp.qs)):
             q = ocp.qs[k]
             robot_instance.display(q)
             time.sleep(dt)
