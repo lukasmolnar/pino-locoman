@@ -14,18 +14,18 @@ ocp_nodes = 8
 dt = 0.03
 
 # Only for B2G
-arm_f_des = np.array([0, 0, -100])
+arm_f_des = np.array([0, 0, 0])
 arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 
-# Compiled solver
-solver = "osqp"
+# Solver
+solver = "fatrop"
 compile_solver = False
 load_compiled_solver = None
 
-debug = True  # print info
+debug = False  # print info
 
 
 def main():
@@ -91,7 +91,6 @@ def main():
                 f_ext[joint_id] = pin.Force(f)
 
             tau_rnea = pin.rnea(model, data, q, v, a, f_ext)
-            print("tau rnea: ", tau_rnea)
 
             tau_total = np.concatenate((np.zeros(6), tau))
             print("tau gap: ", tau_total - tau_rnea)

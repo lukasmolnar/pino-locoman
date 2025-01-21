@@ -38,27 +38,28 @@ class OCP_RNEA:
         # Weights
         Q_pos_diag = np.concatenate((
             [0] * 2,  # base x/y
-            [1000],  # base z
+            [100],  # base z
             [100] * 3,  # base rot
             [1] * self.nj,  # joints
         ))
         Q_vel_diag = np.concatenate((
             [1000] * 3,  # base linear
-            [100] * 3,  # base angular
+            [1000] * 3,  # base angular
             [1] * self.nj,
         ))
         Q_diag = np.concatenate((Q_pos_diag, Q_vel_diag))
         R_diag = np.concatenate((
+            [1e-4] * self.nv,  # velocities
             [1e-4] * self.nj,  # joint torques
-            [1e-2] * self.nf,  # contact forces
+            [1e-4] * self.nf,  # contact forces
         ))
         Q = np.diag(Q_diag)
         R = np.diag(R_diag)
 
         # State and inputs to optimize
-        nx = self.nq + self.nv  # positions + velocities
+        self.nx = self.nq + self.nv  # positions + velocities
         self.ndx_opt = self.nv * 2  # position deltas + velocities
-        self.nu_opt = self.nj + self.nf  # joint torques + forces
+        self.nu_opt = self.nv + self.nj + self.nf  # velocities + joint torques + forces
 
         # Dynamics
         self.dyn = DynamicsRNEA(self.model, self.mass, self.ee_ids)
@@ -72,7 +73,7 @@ class OCP_RNEA:
         self.DX_opt.append(self.opti.variable(self.ndx_opt))
 
         # Parameters
-        self.x_init = self.opti.parameter(nx)  # initial state
+        self.x_init = self.opti.parameter(self.nx)  # initial state
         self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes)  # gait schedule: contacts / bezier indices
         self.com_goal = self.opti.parameter(6)  # linear + angular momentum
         self.arm_f_des = self.opti.parameter(3)  # force at end-effector
@@ -86,7 +87,7 @@ class OCP_RNEA:
         if self.arm_ee_id:
             # TODO: Check if arm force = 0 is ok (it is constrained later)
             f_des = np.concatenate((f_des, np.zeros(3)))
-        u_des = np.concatenate((np.zeros(robot.nj), f_des))  # zero torque
+        u_des = np.concatenate((np.zeros(robot.nv + robot.nj), f_des))  # zero velocity + torque
 
         # OBJECTIVE
         obj = 0
@@ -106,8 +107,8 @@ class OCP_RNEA:
         obj += 0.5 * dx.T @ Q @ dx
 
         # CONSTRAINTS
-        self.opti.subject_to(self.DX_opt[0][:self.nv] == [0] * self.nv)  # initial position
-        # self.opti.subject_to(self.DX_opt[0] == [0] * 2 * self.nv)  # initial velocity
+        # self.opti.subject_to(self.DX_opt[0][:self.nv] == [0] * self.nv)  # initial pos
+        self.opti.subject_to(self.DX_opt[0] == [0] * 2 * self.nv)  # initial pos + vel
 
         for i in range(self.nodes):
             # Gather all state and input info
@@ -117,18 +118,20 @@ class OCP_RNEA:
             u = self.U_opt[i]
             q = x[:self.nq]
             v = x[self.nq:]
-            tau_j = u[:self.nj]
-            forces = u[self.nj:]
+            v_next_des = u[:self.nv]
+            tau_j = u[self.nv : self.nv + self.nj]
+            forces = u[self.nv + self.nj :]
 
             # Dynamics constraint
             dx_next = self.DX_opt[i+1]
             dq_next = dx_next[:self.nv]
             x_next = self.dyn.state_integrate()(self.x_init, dx_next)
             v_next = x_next[self.nq:]
-            self.opti.subject_to(dq_next == dq + 0.5 * (v + v_next) * self.dt)
+            self.opti.subject_to(dq_next == dq + 0.5 * (v + v_next_des) * self.dt)
+            self.opti.subject_to(v_next == v_next_des)
 
             # RNEA constraint
-            a = (v_next - v) / self.dt  # finite difference
+            a = (v_next_des - v) / self.dt  # finite difference
             tau_rnea = self.dyn.rnea_dynamics(self.arm_ee_id)(q, v, a, forces)
             self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
             self.opti.subject_to(tau_rnea[6:] == tau_j)  # joints
@@ -161,6 +164,11 @@ class OCP_RNEA:
                 vel_z_des = self.gait_sequence.get_bezier_vel_z(0, bezier_idx, h=step_height)
                 vel_diff = vel_z - vel_z_des
                 self.opti.subject_to((1 - in_contact) * vel_diff == 0)
+
+                # pos_z = self.dyn.get_frame_position(frame_id)(q)[2]
+                # pos_z_des = self.gait_sequence.get_bezier_pos_z(0, bezier_idx, h=step_height)
+                # pos_diff = pos_z - pos_z_des
+                # self.opti.subject_to((1 - in_contact) * pos_diff == 0)
 
                 # Humanoid
                 if self.n_feet == 2:
@@ -205,6 +213,7 @@ class OCP_RNEA:
         self.lam_g = None
         self.qs = []
         self.vs = []
+        self.vdes = []
         self.taus = []
         self.fs = []
 
@@ -248,7 +257,7 @@ class OCP_RNEA:
                 "debug": True,
             }
             opts["fatrop"] = {
-                "print_level": 0,
+                "print_level": 1,
                 "tol": 1e-3,
                 "mu_init": 1e-8,
                 "warm_start_init_point": True,
@@ -363,8 +372,9 @@ class OCP_RNEA:
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
             self.qs.append(np.array(x_sol[:self.nq]))
             self.vs.append(np.array(x_sol[self.nq:]))
-            self.taus.append(np.array(u_sol[:self.nj]))
-            self.fs.append(np.array(u_sol[self.nj:]))
+            self.vdes.append(np.array(u_sol[:self.nv]))
+            self.taus.append(np.array(u_sol[self.nv : self.nv + self.nj]))
+            self.fs.append(np.array(u_sol[self.nv + self.nj :]))
 
             if not retract_all:
                 return

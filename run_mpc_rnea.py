@@ -1,6 +1,7 @@
 import time
 import numpy as np
 import pinocchio as pin
+import casadi
 
 from helpers import *
 from ocp_rnea import OCP_RNEA
@@ -14,7 +15,7 @@ ocp_nodes = 8
 dt = 0.03
 
 # Only for B2G
-arm_f_des = np.array([0, 0, -100])
+arm_f_des = np.array([0, 0, 0])
 arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
@@ -23,29 +24,62 @@ com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 # MPC
 mpc_loops = 50
 
-# Compiled solver
-compile_solver = False
+# Solver
+solver = "fatrop"
+compile_solver = True
 load_compiled_solver = None
+# load_compiled_solver = "libsolver_rnea_trot_N8_dt03.so"
 
-debug = True  # print info
+debug = False  # print info
 
 
 def mpc_loop(ocp, robot_instance, q0, N):
     x_init = np.concatenate((q0, np.zeros(robot_instance.model.nv)))
     solve_times = []
 
-    # Initialize solver
-    ocp.init_solver(solver="osqp", compile_solver=compile_solver)
+    if load_compiled_solver:
+        # Load solver
+        compiled_solver = casadi.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
+        ocp.qs = []
+        ocp.vs = []
+        ocp.taus = []
+        ocp.fs = []
 
-    for k in range(N):
-        ocp.update_initial_state(x_init)
-        ocp.update_contact_schedule(shift_idx=k)
-        ocp.warm_start()
-        ocp.solve(retract_all=False)
-        solve_times.append(ocp.solve_time)
+        for k in range(N):
+            # TODO: Look into warm-starting
+            contact_schedule = ocp.gait_sequence.shift_contact_schedule(k)[:, :ocp_nodes]
+            start_time = time.time()
+            DX_sol, U_sol = compiled_solver(x_init, contact_schedule, com_goal, arm_f_des, arm_vel_des)
+            end_time = time.time()
+            sol_time = end_time - start_time
+            solve_times.append(sol_time)
 
-        x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
-        robot_instance.display(ocp.qs[-1])  # Display last q
+            print("Solve time (ms): ", sol_time * 1000)
+            
+            x_init = ocp.dyn.state_integrate()(x_init, DX_sol)
+            q = np.array(x_init[:robot.nq])
+            v = np.array(x_init[robot.nq:])
+            tau = np.array(U_sol[robot.nv : robot.nv + robot.nj]).flatten()
+            f = np.array(U_sol[robot.nv + robot.nj :]).flatten()
+            ocp.qs.append(q)
+            ocp.vs.append(v)
+            ocp.taus.append(tau)
+            ocp.fs.append(f)
+            robot_instance.display(q)
+
+    else:
+        # Initialize solver
+        ocp.init_solver(solver=solver, compile_solver=compile_solver)
+
+        for k in range(N):
+            ocp.update_initial_state(x_init)
+            ocp.update_contact_schedule(shift_idx=k)
+            ocp.warm_start()
+            ocp.solve(retract_all=False)
+            solve_times.append(ocp.solve_time)
+
+            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+            robot_instance.display(ocp.qs[-1])  # Display last q
 
     print("Avg solve time (ms): ", np.average(solve_times) * 1000)
     print("Std solve time (ms): ", np.std(solve_times) * 1000)
