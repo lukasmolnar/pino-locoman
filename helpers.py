@@ -156,6 +156,15 @@ class GaitSequence:
         shift_idx %= self.gait_nodes
         return np.roll(self.contact_schedule, -shift_idx, axis=1)
     
+    def get_bezier_pos_z(self, p0_z, idx, h=0.1):
+        # NOTE: idx needs to be in [0, N)
+        t = idx * self.dt
+        T = self.N * self.dt
+
+        p1_z = p0_z + h
+        p2_z = p0_z
+        return (1 - t / T)**2 * p0_z + 2 * (1 - t / T) * (t / T) * p1_z + (t / T)**2 * p2_z
+    
     def get_bezier_vel_z(self, p0_z, idx, h=0.1):
         # NOTE: idx needs to be in [0, N)
         t = idx * self.dt

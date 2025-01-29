@@ -14,7 +14,7 @@ ocp_nodes = 8
 dt = 0.03
 
 # Only for B2G
-arm_f_des = np.array([0, 0, -100])
+arm_f_des = np.array([0, 0, 0])
 arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
@@ -24,10 +24,12 @@ com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 mpc_loops = 50
 
 # Compiled solver
+solver = "osqp"
 compile_solver = False
-load_compiled_solver = None
+# compiled_sqp_data = None
+compiled_sqp_data = "libsqp_data.so"
 
-debug = True  # print info
+debug = False  # print info
 
 
 def mpc_loop(ocp, robot_instance, q0, N):
@@ -35,13 +37,15 @@ def mpc_loop(ocp, robot_instance, q0, N):
     solve_times = []
 
     # Initialize solver
-    ocp.init_solver(solver="osqp", compile_solver=compile_solver)
+    ocp.update_initial_state(x_init)
+    ocp.update_contact_schedule(shift_idx=0)
+    ocp.init_solver(solver=solver, compile_solver=compile_solver)
 
     for k in range(N):
         ocp.update_initial_state(x_init)
         ocp.update_contact_schedule(shift_idx=k)
         ocp.warm_start()
-        ocp.solve(retract_all=False)
+        ocp.solve(retract_all=False, compiled_sqp_data=compiled_sqp_data)
         solve_times.append(ocp.solve_time)
 
         x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])

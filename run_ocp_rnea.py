@@ -14,7 +14,7 @@ ocp_nodes = 8
 dt = 0.03
 
 # Only for B2G
-arm_f_des = np.array([0, 0, -100])
+arm_f_des = np.array([0, 0, 0])
 arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
@@ -23,9 +23,8 @@ com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 # Compiled solver
 solver = "osqp"
 compile_solver = False
-load_compiled_solver = None
 
-debug = True  # print info
+debug = False  # print info
 
 
 def main():

@@ -40,17 +40,17 @@ class OCP_RNEA:
             [0] * 2,  # base x/y
             [1000],  # base z
             [100] * 3,  # base rot
-            [1] * self.nj,  # joints
+            [10] * self.nj,  # joints
         ))
         Q_vel_diag = np.concatenate((
             [1000] * 3,  # base linear
-            [100] * 3,  # base angular
+            [1000] * 3,  # base angular
             [1] * self.nj,
         ))
         Q_diag = np.concatenate((Q_pos_diag, Q_vel_diag))
         R_diag = np.concatenate((
-            [1e-4] * self.nj,  # joint torques
-            [1e-2] * self.nf,  # contact forces
+            [1e-5] * self.nj,  # joint torques
+            [1e-5] * self.nf,  # contact forces
         ))
         Q = np.diag(Q_diag)
         R = np.diag(R_diag)
@@ -93,6 +93,8 @@ class OCP_RNEA:
 
         # Tracking and regularization
         for i in range(self.nodes):
+            # TODO: Check whether to reset dx_des based on com_goal
+            # dx_des[:3] = self.com_goal[:3] * i * self.dt
             dx = self.DX_opt[i]
             u = self.U_opt[i]
             err_dx = dx - dx_des
@@ -103,11 +105,11 @@ class OCP_RNEA:
         # Final state
         dx = self.DX_opt[self.nodes]
         err_dx = dx - dx_des
-        obj += 0.5 * dx.T @ Q @ dx
+        obj += 0.5 * err_dx.T @ Q @ err_dx
 
         # CONSTRAINTS
-        self.opti.subject_to(self.DX_opt[0][:self.nv] == [0] * self.nv)  # initial position
-        # self.opti.subject_to(self.DX_opt[0] == [0] * 2 * self.nv)  # initial velocity
+        # self.opti.subject_to(self.DX_opt[0][:self.nv] == [0] * self.nv)  # initial position
+        self.opti.subject_to(self.DX_opt[0] == [0] * 2 * self.nv)  # initial velocity
 
         for i in range(self.nodes):
             # Gather all state and input info
@@ -131,7 +133,8 @@ class OCP_RNEA:
             a = (v_next - v) / self.dt  # finite difference
             tau_rnea = self.dyn.rnea_dynamics(self.arm_ee_id)(q, v, a, forces)
             self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
-            self.opti.subject_to(tau_rnea[6:] == tau_j)  # joints
+            if i < 2:
+                self.opti.subject_to(tau_rnea[6:] == tau_j)  # joints
 
             # Contact and swing constraints
             for idx, frame_id in enumerate(self.ee_ids):
@@ -148,19 +151,28 @@ class OCP_RNEA:
                 self.opti.subject_to(in_contact * f_normal >= 0)
                 self.opti.subject_to(in_contact * mu**2 * f_normal**2 >= in_contact * f_tangent_square)
 
+                # Zero end-effector force
+                self.opti.subject_to((1 - in_contact) * f_e == [0] * 3)
+
+                if i == 0:
+                    # No path constraint!
+                    continue
+
                 # Zero end-effector velocity (linear)
                 vel = self.dyn.get_frame_velocity(frame_id)(q, v)
                 vel_lin = vel[:3]
                 self.opti.subject_to(in_contact * vel_lin == [0] * 3)
-
-                # Zero end-effector force
-                self.opti.subject_to((1 - in_contact) * f_e == [0] * 3)
 
                 # Track bezier velocity (only in z)
                 vel_z = vel_lin[2]
                 vel_z_des = self.gait_sequence.get_bezier_vel_z(0, bezier_idx, h=step_height)
                 vel_diff = vel_z - vel_z_des
                 self.opti.subject_to((1 - in_contact) * vel_diff == 0)
+
+                # pos_z = self.dyn.get_frame_position(frame_id)(q)[2]
+                # pos_z_des = self.gait_sequence.get_bezier_pos_z(0, bezier_idx, h=step_height)
+                # pos_diff = pos_z - pos_z_des
+                # self.opti.subject_to((1 - in_contact) * pos_diff == 0)
 
                 # Humanoid
                 if self.n_feet == 2:
@@ -230,10 +242,12 @@ class OCP_RNEA:
             for i in range(self.nodes):
                 DX_diff = self.DX_prev[i+1] - DX_init
                 self.opti.set_initial(self.DX_opt[i], DX_diff)
+                # self.opti.set_initial(self.DX_opt[i], self.DX_prev[i])
 
         if self.U_prev is not None:
             for i in range(self.nodes - 1):
                 self.opti.set_initial(self.U_opt[i], self.U_prev[i+1])
+                # self.opti.set_initial(self.U_opt[i], self.U_prev[i])
 
         if self.lam_g is not None:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
@@ -267,6 +281,15 @@ class OCP_RNEA:
                 solver_function.generate("compiled_solver.c")
 
         elif solver == "osqp":
+            # OSQP options
+            self.osqp_opts = {
+                "max_iter": 200,
+                "alpha": 1.4,
+                "rho": 2e-2,
+                "warm_start": True,
+                "adaptive_rho": False,
+            }
+
             # Get all info from self.opti
             x = self.opti.x
             p = self.opti.p
@@ -279,22 +302,48 @@ class OCP_RNEA:
             hess_f, grad_f = casadi.hessian(f, x)
 
             # Store data functions
-            # TODO: Code generation
-            self.sqp_data = casadi.Function("sqp_data", [x, p], [hess_f, grad_f, J_g, g, lbg, ubg])
+            self.sqp_data = casadi.Function("sqp_data", [x, p], [grad_f, J_g, g, lbg, ubg])
+            self.hess_data = casadi.Function("hess_data", [x, p], [hess_f])
             self.f_data = casadi.Function("f_data", [x, p], [f, grad_f])
             self.g_data = casadi.Function("g_data", [x, p], [g, lbg, ubg])
+            
+            # Store initial hessian (diagonal!)
+            x_val = self.opti.value(self.opti.x, self.opti.initial())
+            p_val = self.opti.value(self.opti.p, self.opti.initial())
+            hess_val = self.hess_data(x_val, p_val)
+            self.hess_diag = np.diag(hess_val)
 
-            # OSQP options
-            self.osqp_opts = {
-                "max_iter": 100,
-                "alpha": 1.4,
-                "rho": 2e-2,
-            }
+            # OSQP formulation with dummy data and diagonal hessian
+            J_g_pattern = J_g.sparsity().get_triplet()
+            self.A_rows, self.A_cols = J_g_pattern  # store sparsity pattern
+
+            A = sparse.csc_matrix((np.ones_like(self.A_rows), (self.A_rows, self.A_cols)), shape=J_g.shape)
+            P = sparse.csc_matrix(np.diag(self.hess_diag))  # diagonal
+            q = np.ones(grad_f.shape)
+            l = -np.ones(g.shape)
+            u = np.ones(g.shape)
+
+            self.osqp_prob = osqp.OSQP()
+            self.osqp_prob.setup(P, q, A, l, u, **self.osqp_opts)
+
+            # OSQP codegen doesn't work with conda environment!
+            # self.osqp_prob.codegen(
+            #     "codegen/osqp",
+            #     parameters="matrices",
+            # )
+
+            if compile_solver:
+                self.sqp_data.generate("sqp_data.c")
+                self.f_data.generate("f_data.c")
+                self.g_data.generate("g_data.c")
+
+                # Store hessian diagonal array
+                np.savetxt("codegen/hess_diag.txt", self.hess_diag)
 
         else:
             raise ValueError(f"Solver {solver} not supported")
 
-    def solve(self, retract_all=True):
+    def solve(self, retract_all=True, compiled_sqp_data=None):
         if self.solver_type == "fatrop":
             try:
                 self.sol = self.opti.solve()
@@ -322,31 +371,60 @@ class OCP_RNEA:
                     self.opti.value(self.arm_vel_des),
                 )
 
+            if compiled_sqp_data:
+                self.sqp_data = casadi.external("sqp_data", "codegen/lib/" + compiled_sqp_data)
+
             # Initial guess
             current_x = self.opti.value(self.opti.x, self.opti.initial())
             start_time = time.time()
 
-            # TODO: Termination condition
-            for _ in range(3):
-                # OSQP
-                hess_f, grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, ocp_params)
-                P = sparse.csc_matrix(hess_f)
-                A = sparse.csc_matrix(J_g)
+            # Constant diagonal hessian (only used when redifining OSQP)
+            P = sparse.csc_matrix(np.diag(self.hess_diag))
+
+            # TODO: How many iterations?
+            for _ in range(1):
+                # Get data
+                start = time.time()
+                grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, ocp_params)
+                end = time.time()
+                print("Data time (ms): ", (end - start) * 1000)
+
+                start = time.time()
                 q = np.array(grad_f)
                 l = np.array(lbg - g)
                 u = np.array(ubg - g)
 
-                # TODO: Possibly use update
-                self.osqp_prob = osqp.OSQP()
-                self.osqp_prob.setup(P, q, A, l, u, **self.osqp_opts)
+                # Redifine OSQP
+                # A = sparse.csc_matrix(J_g)
+                # end = time.time()
+                # print("Redefine time (ms): ", (end - start) * 1000)
+
+                # start = time.time()
+                # self.osqp_prob = osqp.OSQP()
+                # self.osqp_prob.setup(P, q, A, l, u, **self.osqp_opts)
+                # end = time.time()
+                # print("Setup time (ms): ", (end - start) * 1000)
+
+                # Update OSQP
+                A_data = np.array(J_g)
+                A_data = A_data[self.A_rows, self.A_cols]  # reorder
+                self.osqp_prob.update(q=q, Ax=A_data, l=l, u=u)
+                end = time.time()
+                print("Update time (ms): ", (end - start) * 1000)
+
+                # Solve
+                start = time.time()
                 sol_dx = self.osqp_prob.solve().x
+                current_x = current_x + sol_dx
+                end = time.time()
+                print("Solve time (ms): ", (end - start) * 1000)
 
                 # Armijo line search
-                current_x = self._armijo_line_search(
-                    current_x=current_x,
-                    dx=sol_dx,
-                    ocp_params=ocp_params,
-                )
+                # current_x = self._armijo_line_search(
+                #     current_x=current_x,
+                #     dx=sol_dx,
+                #     ocp_params=ocp_params,
+                # )
 
             end_time = time.time()
             self.solve_time = end_time - start_time
