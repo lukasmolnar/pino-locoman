@@ -23,7 +23,6 @@ com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 # Solver
 solver = "fatrop"
 compile_solver = False
-load_compiled_solver = None
 
 debug = False  # print info
 
@@ -57,7 +56,24 @@ def main():
     ocp.update_initial_state(x_init)
     ocp.update_contact_schedule(shift_idx=gait_idx)
     ocp.init_solver(solver=solver, compile_solver=compile_solver)
-    ocp.solve(retract_all=True)
+
+    if compile_solver:
+        # Evaluate solver function that was compiled
+        contact_schedule = ocp.opti.value(ocp.contact_schedule)
+        x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
+        # lam_g_warm_start = ocp.opti.value(ocp.opti.lam_g, ocp.opti.initial())
+
+        start_time = time.time()
+        sol_x = ocp.solver_function(x_init, contact_schedule, com_goal, arm_f_des, 
+                                    arm_vel_des, x_warm_start)
+        end_time = time.time()
+        ocp.solve_time = end_time - start_time
+
+        ocp._retract_stacked_sol(sol_x, retract_all=True)
+    else:
+        ocp.solve(retract_all=True)
+
+    print("Solve time (ms):", ocp.solve_time * 1000)
 
     if debug:
         for k in range(ocp_nodes):
@@ -94,8 +110,6 @@ def main():
 
             tau_total = np.concatenate((np.zeros(6), tau))
             print("tau gap: ", tau_total - tau_rnea)
-
-    print("Solve time (ms):", ocp.solve_time * 1000)
 
     # Visualize
     robot_instance.initViewer()

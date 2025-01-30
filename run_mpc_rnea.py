@@ -22,50 +22,57 @@ arm_vel_des = np.array([0.1, 0, 0])
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 
 # MPC
-mpc_loops = 50
+mpc_loops = 100
 
 # Solver
 solver = "fatrop"
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_rnea_trot_N8_dt03.so"
+# load_compiled_solver = "libsolver_rnea_cold.so"
 
 debug = False  # print info
 
 
 def mpc_loop(ocp, robot_instance, q0, N):
-    x_init = np.concatenate((q0, np.zeros(robot_instance.model.nv)))
+    x_init = np.concatenate((q0, np.zeros(robot.nv)))
     solve_times = []
 
-    if load_compiled_solver:
-        # Load solver
-        compiled_solver = casadi.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
-        ocp.qs = []
-        ocp.vs = []
-        ocp.taus = []
-        ocp.fs = []
+    if compile_solver or load_compiled_solver:
+        if load_compiled_solver:
+            # Load solver
+            solver_function = casadi.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
+        else:
+            # Initialize solver
+            ocp.init_solver(solver=solver, compile_solver=True)
+            solver_function = ocp.solver_function
+
+        # Warm start (dual variables)
+        # lam_g_warm_start = ocp.opti.value(ocp.opti.lam_g, ocp.opti.initial())
 
         for k in range(N):
-            # TODO: Look into warm-starting
-            contact_schedule = ocp.gait_sequence.shift_contact_schedule(k)[:, :ocp_nodes]
+            # Get parameters
+            ocp.warm_start()
+            ocp.update_initial_state(x_init)
+            ocp.update_contact_schedule(shift_idx=k)
+            x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
+            contact_schedule = ocp.opti.value(ocp.contact_schedule)
+
+            # Solve
             start_time = time.time()
-            DX_sol, U_sol = compiled_solver(x_init, contact_schedule, com_goal, arm_f_des, arm_vel_des)
+            sol_x = solver_function(x_init, contact_schedule, com_goal, arm_f_des,
+                                    arm_vel_des, x_warm_start)
             end_time = time.time()
             sol_time = end_time - start_time
             solve_times.append(sol_time)
 
             print("Solve time (ms): ", sol_time * 1000)
-            
-            x_init = ocp.dyn.state_integrate()(x_init, DX_sol)
-            q = np.array(x_init[:robot.nq])
-            v = np.array(x_init[robot.nq:])
-            tau = np.array(U_sol[robot.nv : robot.nv + robot.nj]).flatten()
-            f = np.array(U_sol[robot.nv + robot.nj :]).flatten()
-            ocp.qs.append(q)
-            ocp.vs.append(v)
-            ocp.taus.append(tau)
-            ocp.fs.append(f)
-            robot_instance.display(q)
+
+            # Retract solution
+            ocp._retract_stacked_sol(sol_x, retract_all=False)
+            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+            # lam_g_warm_start = sol_lam_g
+
+            robot_instance.display(ocp.qs[-1])  # Display last q
 
     else:
         # Initialize solver
