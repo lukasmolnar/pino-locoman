@@ -22,13 +22,13 @@ arm_vel_des = np.array([0.1, 0, 0])
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 
 # MPC
-mpc_loops = 100
+mpc_loops = 200
 
 # Solver
 solver = "fatrop"
 compile_solver = True
-load_compiled_solver = None
-# load_compiled_solver = "libsolver_rnea_cold.so"
+# load_compiled_solver = None
+load_compiled_solver = "libsolver_rnea_warm_QR.so"
 
 debug = False  # print info
 
@@ -59,8 +59,8 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
             # Solve
             start_time = time.time()
-            sol_x = solver_function(x_init, contact_schedule, com_goal, arm_f_des,
-                                    arm_vel_des, x_warm_start)
+            sol_x = solver_function(x_init, contact_schedule, com_goal, arm_f_des, arm_vel_des,
+                                    robot.Q_diag, robot.R_diag, x_warm_start)
             end_time = time.time()
             sol_time = end_time - start_time
             solve_times.append(sol_time)
@@ -98,7 +98,7 @@ def main():
     robot.set_gait_sequence(gait_type, gait_nodes, dt)
     if type(robot) == B2G and not robot.ignore_arm:
         robot.add_arm_task(arm_f_des, arm_vel_des)
-    robot.initialize_weights()
+    robot.initialize_weights(dynamics="rnea")
 
     robot_instance = robot.robot
     model = robot.model
@@ -120,6 +120,7 @@ def main():
     )
     ocp.set_com_goal(com_goal)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
+    ocp.set_weights(robot.Q_diag, robot.R_diag)
     ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
 
     if debug:

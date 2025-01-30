@@ -31,7 +31,7 @@ def main():
     robot.set_gait_sequence(gait_type, gait_nodes, dt)
     if type(robot) == B2G and not robot.ignore_arm:
         robot.add_arm_task(arm_f_des, arm_vel_des)
-    robot.initialize_weights()
+    robot.initialize_weights(dynamics="rnea")
 
     robot_instance = robot.robot
     model = robot.model
@@ -49,6 +49,7 @@ def main():
     )
     ocp.set_com_goal(com_goal)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
+    ocp.set_weights(robot.Q_diag, robot.R_diag)
 
     x_init = np.concatenate((q0, np.zeros(model.nv)))
     gait_idx = 0
@@ -64,8 +65,8 @@ def main():
         # lam_g_warm_start = ocp.opti.value(ocp.opti.lam_g, ocp.opti.initial())
 
         start_time = time.time()
-        sol_x = ocp.solver_function(x_init, contact_schedule, com_goal, arm_f_des, 
-                                    arm_vel_des, x_warm_start)
+        sol_x = ocp.solver_function(x_init, contact_schedule, com_goal, arm_f_des, arm_vel_des,
+                                    robot.Q_diag, robot.R_diag, x_warm_start)
         end_time = time.time()
         ocp.solve_time = end_time - start_time
 

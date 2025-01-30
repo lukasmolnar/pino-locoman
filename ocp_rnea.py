@@ -35,27 +35,6 @@ class OCP_RNEA:
         self.n_feet = len(self.ee_ids)
         self.n_contact_feet = self.gait_sequence.n_contacts
 
-        # Weights
-        Q_pos_diag = np.concatenate((
-            [0] * 2,  # base x/y
-            [1000],  # base z
-            [1000] * 3,  # base rot
-            [100] * self.nj,  # joints
-        ))
-        Q_vel_diag = np.concatenate((
-            [1000] * 3,  # base linear
-            [1000] * 3,  # base angular
-            [1] * self.nj,
-        ))
-        Q_diag = np.concatenate((Q_pos_diag, Q_vel_diag))
-        R_diag = np.concatenate((
-            [1e-4] * self.nv,  # velocities
-            [1e-4] * self.nj,  # joint torques
-            [1e-4] * self.nf,  # contact forces
-        ))
-        Q = np.diag(Q_diag)
-        R = np.diag(R_diag)
-
         # State and inputs to optimize
         self.nx = self.nq + self.nv  # positions + velocities
         self.ndx_opt = self.nv * 2  # position deltas + velocities
@@ -79,6 +58,11 @@ class OCP_RNEA:
         self.arm_f_des = self.opti.parameter(3)  # force at end-effector
         self.arm_vel_des = self.opti.parameter(3)  # velocity at end-effector
 
+        self.Q_diag = self.opti.parameter(self.ndx_opt)  # state weights
+        self.R_diag = self.opti.parameter(self.nu_opt)  # input weights
+        self.Q = casadi.diag(self.Q_diag)
+        self.R = casadi.diag(self.R_diag)
+
         # Desired state and input
         v_des = casadi.vertcat(self.com_goal, [0] * self.nj)
         x_des = casadi.vertcat(robot.q0, v_des)
@@ -98,13 +82,13 @@ class OCP_RNEA:
             u = self.U_opt[i]
             err_dx = dx - dx_des
             err_u = u - u_des
-            obj += 0.5 * err_dx.T @ Q @ err_dx
-            obj += 0.5 * err_u.T @ R @ err_u
+            obj += 0.5 * err_dx.T @ self.Q @ err_dx
+            obj += 0.5 * err_u.T @ self.R @ err_u
         
         # Final state
         dx = self.DX_opt[self.nodes]
         err_dx = dx - dx_des
-        obj += 0.5 * err_dx.T @ Q @ err_dx
+        obj += 0.5 * err_dx.T @ self.Q @ err_dx
 
         # CONSTRAINTS
         # self.opti.subject_to(self.DX_opt[0][:self.nv] == [0] * self.nv)  # initial pos
@@ -238,6 +222,10 @@ class OCP_RNEA:
         self.opti.set_value(self.arm_f_des, arm_f_des)
         self.opti.set_value(self.arm_vel_des, arm_vel_des)
 
+    def set_weights(self, Q_diag, R_diag):
+        self.opti.set_value(self.Q_diag, Q_diag)
+        self.opti.set_value(self.R_diag, R_diag)
+
     def warm_start(self):
         # Shift previous solution
         # NOTE: No warm-start for last node, copying the 2nd last node performs worse.
@@ -288,6 +276,8 @@ class OCP_RNEA:
                     self.com_goal,
                     self.arm_f_des,
                     self.arm_vel_des,
+                    self.Q_diag,
+                    self.R_diag,
                     self.opti.x,  # warm start (initial guess)
                     # self.opti.lam_g,  # warm start (dual variables)
                 ]
