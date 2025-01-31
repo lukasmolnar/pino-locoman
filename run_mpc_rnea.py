@@ -21,7 +21,7 @@ arm_vel_des = np.array([0.1, 0, 0])
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 
 # MPC
-mpc_loops = 50
+mpc_loops = 200
 
 # Compiled solver
 solver = "osqp"

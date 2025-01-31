@@ -314,10 +314,8 @@ class OCP_RNEA:
             self.hess_diag = np.diag(hess_val)
 
             # OSQP formulation with dummy data and diagonal hessian
-            J_g_pattern = J_g.sparsity().get_triplet()
-            self.A_rows, self.A_cols = J_g_pattern  # store sparsity pattern
-
-            A = sparse.csc_matrix((np.ones_like(self.A_rows), (self.A_rows, self.A_cols)), shape=J_g.shape)
+            A_rows, A_cols = J_g.sparsity().get_triplet()  # store sparsity pattern
+            A = sparse.csc_matrix((np.ones_like(A_rows), (A_rows, A_cols)), shape=J_g.shape)
             P = sparse.csc_matrix(np.diag(self.hess_diag))  # diagonal
             q = np.ones(grad_f.shape)
             l = -np.ones(g.shape)
@@ -378,9 +376,6 @@ class OCP_RNEA:
             current_x = self.opti.value(self.opti.x, self.opti.initial())
             start_time = time.time()
 
-            # Constant diagonal hessian (only used when redifining OSQP)
-            P = sparse.csc_matrix(np.diag(self.hess_diag))
-
             # TODO: How many iterations?
             for _ in range(1):
                 # Get data
@@ -390,25 +385,14 @@ class OCP_RNEA:
                 print("Data time (ms): ", (end - start) * 1000)
 
                 start = time.time()
+
+                grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, ocp_params)
+                A = np.array(J_g.nonzeros())
                 q = np.array(grad_f)
                 l = np.array(lbg - g)
                 u = np.array(ubg - g)
+                self.osqp_prob.update(q=q, Ax=A, l=l, u=u)
 
-                # Redifine OSQP
-                # A = sparse.csc_matrix(J_g)
-                # end = time.time()
-                # print("Redefine time (ms): ", (end - start) * 1000)
-
-                # start = time.time()
-                # self.osqp_prob = osqp.OSQP()
-                # self.osqp_prob.setup(P, q, A, l, u, **self.osqp_opts)
-                # end = time.time()
-                # print("Setup time (ms): ", (end - start) * 1000)
-
-                # Update OSQP
-                A_data = np.array(J_g)
-                A_data = A_data[self.A_rows, self.A_cols]  # reorder
-                self.osqp_prob.update(q=q, Ax=A_data, l=l, u=u)
                 end = time.time()
                 print("Update time (ms): ", (end - start) * 1000)
 
@@ -427,6 +411,7 @@ class OCP_RNEA:
                 # )
 
             end_time = time.time()
+            print("Total solve time (ms): ", (end_time - start_time) * 1000)
             self.solve_time = end_time - start_time
 
             self._retract_sqp_sol(current_x, retract_all)
