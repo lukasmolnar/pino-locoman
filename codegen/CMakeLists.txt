@@ -22,7 +22,7 @@ add_library(compiled_solver SHARED ${SOURCE_FILE})
 target_link_libraries(compiled_solver PRIVATE ${FATROP_LIB} ${BLASFEO_LIB})
 
 # Compilation flags
-target_compile_options(compiled_solver PRIVATE -O2 -fPIC)
+target_compile_options(compiled_solver PRIVATE -O3 -fPIC)
 
 # Install the shared library
 install(TARGETS compiled_solver LIBRARY DESTINATION lib)

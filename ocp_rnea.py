@@ -26,8 +26,6 @@ class OCP_RNEA:
         self.nj = robot.nj
 
         self.nodes = nodes
-        self.nf = robot.nf
-
         self.mass = self.data.mass[0]
         self.dt = self.gait_sequence.dt
         self.ee_ids = robot.ee_ids
@@ -247,7 +245,7 @@ class OCP_RNEA:
         if self.lam_g is not None:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
 
-    def init_solver(self, solver="fatrop", compile_solver=False):
+    def init_solver(self, solver="fatrop", compile_solver=False, warm_start=False):
         self.solver_type = solver
 
         if solver == "fatrop":
@@ -273,14 +271,20 @@ class OCP_RNEA:
                 solver_params = [
                     self.x_init,
                     self.contact_schedule,
-                    self.com_goal,
-                    self.arm_f_des,
-                    self.arm_vel_des,
                     self.Q_diag,
                     self.R_diag,
-                    self.opti.x,  # warm start (initial guess)
-                    # self.opti.lam_g,  # warm start (dual variables)
+                    self.com_goal
                 ]
+                if self.arm_ee_id:
+                    solver_params += [
+                        self.arm_f_des,
+                        self.arm_vel_des
+                    ]
+                if warm_start:
+                    solver_params += [
+                        self.opti.x,  # initial guess
+                        # self.opti.lam_g,  # dual variables
+                    ]
                 self.solver_function = self.opti.to_function(
                     "compiled_solver",
                     solver_params,

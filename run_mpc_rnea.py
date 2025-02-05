@@ -26,9 +26,10 @@ mpc_loops = 200
 
 # Solver
 solver = "fatrop"
+warm_start = False
 compile_solver = True
 # load_compiled_solver = None
-load_compiled_solver = "libsolver_rnea_warm_QR.so"
+load_compiled_solver = "libsolver_b2g_cold.so"
 
 debug = False  # print info
 
@@ -51,16 +52,22 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
         for k in range(N):
             # Get parameters
-            ocp.warm_start()
             ocp.update_initial_state(x_init)
             ocp.update_contact_schedule(shift_idx=k)
-            x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
             contact_schedule = ocp.opti.value(ocp.contact_schedule)
 
+            params = [x_init, contact_schedule, robot.Q_diag, robot.R_diag, com_goal]
+
+            if ocp.arm_ee_id:
+                params += [arm_f_des, arm_vel_des]
+            if warm_start:
+                ocp.warm_start()
+                x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
+                params += x_warm_start
+            
             # Solve
             start_time = time.time()
-            sol_x = solver_function(x_init, contact_schedule, com_goal, arm_f_des, arm_vel_des,
-                                    robot.Q_diag, robot.R_diag, x_warm_start)
+            sol_x = solver_function(*params)
             end_time = time.time()
             sol_time = end_time - start_time
             solve_times.append(sol_time)

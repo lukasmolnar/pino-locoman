@@ -67,7 +67,8 @@ class Robot:
             Q_pos_diag = np.concatenate((
                 [0] * 2,  # base x/y
                 [1000],  # base z
-                [1000] * 3,  # base rot
+                [1000] * 2,  # base rot x/y
+                [0],  # base rot z
                 [100] * self.nj,  # joint pos
             ))
             Q_vel_diag = np.concatenate((
