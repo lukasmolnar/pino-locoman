@@ -1,6 +1,7 @@
 import time
 import numpy as np
 import pinocchio as pin
+import casadi
 
 from helpers import *
 from ocp_rnea import OCP_RNEA
@@ -9,43 +10,93 @@ from ocp_rnea import OCP_RNEA
 # robot = B2(reference_pose="standing")
 robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_nodes = 14
-ocp_nodes = 8
-dt = 0.03
+gait_nodes = 20
+ocp_nodes = 12
+dt = 0.025
 
 # Only for B2G
-arm_f_des = np.array([0, 0, -100])
+arm_f_des = np.array([0, 0, 0])
 arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
+step_height = 0.1
 
 # MPC
-mpc_loops = 50
+mpc_loops = 100
 
-# Compiled solver
-compile_solver = False
+# Solver
+solver = "fatrop"
+warm_start = True
+compile_solver = True
 load_compiled_solver = None
+# load_compiled_solver = "libsolver_b2_warm_N12_dt25.so"
 
-debug = True  # print info
+debug = False  # print info
 
 
 def mpc_loop(ocp, robot_instance, q0, N):
-    x_init = np.concatenate((q0, np.zeros(robot_instance.model.nv)))
+    x_init = np.concatenate((q0, np.zeros(robot.nv)))
     solve_times = []
 
-    # Initialize solver
-    ocp.init_solver(solver="osqp", compile_solver=compile_solver)
+    if compile_solver or load_compiled_solver:
+        if load_compiled_solver:
+            # Load solver
+            solver_function = casadi.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
+        else:
+            # Initialize solver
+            ocp.init_solver(solver=solver, compile_solver=compile_solver, warm_start=warm_start)
+            solver_function = ocp.solver_function
 
-    for k in range(N):
-        ocp.update_initial_state(x_init)
-        ocp.update_contact_schedule(shift_idx=k)
-        ocp.warm_start()
-        ocp.solve(retract_all=False)
-        solve_times.append(ocp.solve_time)
+        # Warm start (dual variables)
+        # lam_g_warm_start = ocp.opti.value(ocp.opti.lam_g, ocp.opti.initial())
 
-        x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
-        robot_instance.display(ocp.qs[-1])  # Display last q
+        for k in range(N):
+            # Get parameters
+            ocp.update_initial_state(x_init)
+            ocp.update_contact_schedule(shift_idx=k)
+            contact_schedule = ocp.opti.value(ocp.contact_schedule)
+            bezier_schedule = ocp.opti.value(ocp.bezier_schedule)
+
+            params = [x_init, contact_schedule, bezier_schedule, robot.Q_diag, robot.R_diag,
+                      com_goal, step_height]
+
+            if ocp.arm_ee_id:
+                params += [arm_f_des, arm_vel_des]
+            if warm_start:
+                ocp.warm_start()
+                x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
+                params += [x_warm_start]
+            
+            # Solve
+            start_time = time.time()
+            sol_x = solver_function(*params)
+            end_time = time.time()
+            sol_time = end_time - start_time
+            solve_times.append(sol_time)
+
+            print("Solve time (ms): ", sol_time * 1000)
+
+            # Retract solution
+            ocp._retract_stacked_sol(sol_x, retract_all=False)
+            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+            # lam_g_warm_start = sol_lam_g
+
+            robot_instance.display(ocp.qs[-1])  # Display last q
+
+    else:
+        # Initialize solver
+        ocp.init_solver(solver=solver, compile_solver=compile_solver)
+
+        for k in range(N):
+            ocp.update_initial_state(x_init)
+            ocp.update_contact_schedule(shift_idx=k)
+            ocp.warm_start()
+            ocp.solve(retract_all=False)
+            solve_times.append(ocp.solve_time)
+
+            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+            robot_instance.display(ocp.qs[-1])  # Display last q
 
     print("Avg solve time (ms): ", np.average(solve_times) * 1000)
     print("Std solve time (ms): ", np.std(solve_times) * 1000)
@@ -57,7 +108,7 @@ def main():
     robot.set_gait_sequence(gait_type, gait_nodes, dt)
     if type(robot) == B2G and not robot.ignore_arm:
         robot.add_arm_task(arm_f_des, arm_vel_des)
-    robot.initialize_weights()
+    robot.initialize_weights(dynamics="rnea")
 
     robot_instance = robot.robot
     model = robot.model
@@ -78,7 +129,9 @@ def main():
         nodes=ocp_nodes,
     )
     ocp.set_com_goal(com_goal)
+    ocp.set_step_height(step_height)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
+    ocp.set_weights(robot.Q_diag, robot.R_diag)
     ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
 
     if debug:
