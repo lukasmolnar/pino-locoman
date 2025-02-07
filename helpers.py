@@ -123,40 +123,49 @@ class GaitSequence:
         self.gait_nodes = gait_nodes
         self.dt = dt
 
-        # 0: in contact, otherwise index of bezier curve (starting at 1)
-        self.contact_schedule = np.zeros((4, gait_nodes))
+        # Separate in contact (0 or 1) from bezier index (from 0 to 1)
+        self.contact_schedule = np.ones((4, gait_nodes))  # default: in contact
+        self.bezier_schedule = np.zeros((4, gait_nodes))  # default: index 0
 
         if gait_type == "trot":
             self.N = gait_nodes // 2
             self.n_contacts = 2
             for i in range(gait_nodes):
-                bez_idx = i % self.N + 1  # start at 1 to distinguish from contact
+                bez_idx = i % self.N / (self.N - 1)  # normalize to [0, 1]
                 if i < self.N:
-                    # FL, RR in swing
-                    self.contact_schedule[1, i] = bez_idx
-                    self.contact_schedule[2, i] = bez_idx
-                else:
                     # FR, RL in swing
-                    self.contact_schedule[0, i] = bez_idx
-                    self.contact_schedule[3, i] = bez_idx
+                    self.contact_schedule[0, i] = 0
+                    self.contact_schedule[3, i] = 0
+                    self.bezier_schedule[0, i] = bez_idx
+                    self.bezier_schedule[3, i] = bez_idx
+                else:
+                    # FL, RR in swing
+                    self.contact_schedule[1, i] = 0
+                    self.contact_schedule[2, i] = 0
+                    self.bezier_schedule[1, i] = bez_idx
+                    self.bezier_schedule[2, i] = bez_idx
 
         elif gait_type == "walk":
             self.N = gait_nodes // 4
             self.n_contacts = 3
             for i in range(gait_nodes):
-                bez_idx = i % self.N + 1  # start at 1 to distinguish from contact
+                bez_idx = i % self.N / (self.N - 1)  # normalize to [0, 1]
                 if i < self.N:
                     # FL in swing
-                    self.contact_schedule[1, i] = bez_idx
+                    self.contact_schedule[1, i] = 0
+                    self.bezier_schedule[1, i] = bez_idx
                 elif i < 2 * self.N:
                     # RR in swing
-                    self.contact_schedule[2, i] = bez_idx
+                    self.contact_schedule[2, i] = 0
+                    self.bezier_schedule[2, i] = bez_idx
                 elif i < 3 * self.N:
                     # FR in swing
-                    self.contact_schedule[0, i] = bez_idx
+                    self.contact_schedule[0, i] = 0
+                    self.bezier_schedule[0, i] = bez_idx
                 else:
                     # RL in swing
-                    self.contact_schedule[3, i] = bez_idx
+                    self.contact_schedule[3, i] = 0
+                    self.bezier_schedule[3, i] = bez_idx
 
         elif gait_type == "stand":
             self.N = gait_nodes
@@ -168,21 +177,25 @@ class GaitSequence:
     def shift_contact_schedule(self, shift_idx):
         shift_idx %= self.gait_nodes
         return np.roll(self.contact_schedule, -shift_idx, axis=1)
-    
+
+    def shift_bezier_schedule(self, shift_idx):
+        shift_idx %= self.gait_nodes
+        return np.roll(self.bezier_schedule, -shift_idx, axis=1)
+
     def get_bezier_pos_z(self, p0_z, idx, h=0.1):
-        # NOTE: idx needs to be in [0, N)
-        t = idx * self.dt
+        # NOTE: idx needs to be normalized to [0, 1]
         T = self.N * self.dt
+        t = idx * T
 
         p1_z = p0_z + h
         p2_z = p0_z
         return (1 - t / T)**2 * p0_z + 2 * (1 - t / T) * (t / T) * p1_z + (t / T)**2 * p2_z
     
     def get_bezier_vel_z(self, p0_z, idx, h=0.1):
-        # NOTE: idx needs to be in [0, N)
-        t = idx * self.dt
+        # NOTE: idx needs to be normalized to [0, 1]
         T = self.N * self.dt
+        t = idx * T
 
         p1_z = p0_z + h
         p2_z = p0_z
-        return 2 * (1 - t / T)**2 * (p1_z - p0_z) / T + 2 * (t / T) * (p2_z - p1_z) / T
+        return 2 * (1 - t / T) * (p1_z - p0_z) / T + 2 * (t / T) * (p2_z - p1_z) / T

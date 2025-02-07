@@ -9,9 +9,9 @@ from ocp_rnea import OCP_RNEA
 # robot = B2(reference_pose="standing")
 robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_nodes = 14
-ocp_nodes = 8
-dt = 0.03
+gait_nodes = 20
+ocp_nodes = 12
+dt = 0.025
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
@@ -19,6 +19,7 @@ arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
+step_height = 0.1
 
 # Solver
 solver = "fatrop"
@@ -48,6 +49,7 @@ def main():
         nodes=ocp_nodes,
     )
     ocp.set_com_goal(com_goal)
+    ocp.set_step_height(step_height)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag)
 
@@ -82,6 +84,7 @@ def main():
             v = ocp.vs[k]
             tau = ocp.taus[k]
             forces = ocp.fs[k]
+            print("k: ", k)
             print("q: ", q.T)
             print("v: ", v.T)
             print("tau: ", tau.T)

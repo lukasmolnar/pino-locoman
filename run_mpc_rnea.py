@@ -10,9 +10,9 @@ from ocp_rnea import OCP_RNEA
 # robot = B2(reference_pose="standing")
 robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_nodes = 14
-ocp_nodes = 8
-dt = 0.03
+gait_nodes = 20
+ocp_nodes = 12
+dt = 0.025
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
@@ -20,16 +20,17 @@ arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
+step_height = 0.1
 
 # MPC
-mpc_loops = 200
+mpc_loops = 100
 
 # Solver
 solver = "fatrop"
-warm_start = False
+warm_start = True
 compile_solver = True
-# load_compiled_solver = None
-load_compiled_solver = "libsolver_b2g_cold.so"
+load_compiled_solver = None
+# load_compiled_solver = "libsolver_b2_warm_N12_dt25.so"
 
 debug = False  # print info
 
@@ -44,7 +45,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
             solver_function = casadi.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
         else:
             # Initialize solver
-            ocp.init_solver(solver=solver, compile_solver=True)
+            ocp.init_solver(solver=solver, compile_solver=compile_solver, warm_start=warm_start)
             solver_function = ocp.solver_function
 
         # Warm start (dual variables)
@@ -55,15 +56,17 @@ def mpc_loop(ocp, robot_instance, q0, N):
             ocp.update_initial_state(x_init)
             ocp.update_contact_schedule(shift_idx=k)
             contact_schedule = ocp.opti.value(ocp.contact_schedule)
+            bezier_schedule = ocp.opti.value(ocp.bezier_schedule)
 
-            params = [x_init, contact_schedule, robot.Q_diag, robot.R_diag, com_goal]
+            params = [x_init, contact_schedule, bezier_schedule, robot.Q_diag, robot.R_diag,
+                      com_goal, step_height]
 
             if ocp.arm_ee_id:
                 params += [arm_f_des, arm_vel_des]
             if warm_start:
                 ocp.warm_start()
                 x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
-                params += x_warm_start
+                params += [x_warm_start]
             
             # Solve
             start_time = time.time()
@@ -126,6 +129,7 @@ def main():
         nodes=ocp_nodes,
     )
     ocp.set_com_goal(com_goal)
+    ocp.set_step_height(step_height)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag)
     ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)

@@ -13,7 +13,6 @@ class OCP_RNEA:
             self,
             robot,
             nodes,
-            step_height=0.1,
             mu=0.7,
         ):
         self.opti = casadi.Opti()
@@ -51,8 +50,10 @@ class OCP_RNEA:
 
         # Parameters
         self.x_init = self.opti.parameter(self.nx)  # initial state
-        self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes)  # gait schedule: contacts / bezier indices
+        self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes) # in_contact: 0 or 1
+        self.bezier_schedule = self.opti.parameter(self.n_feet, self.nodes) # bez_idx: normalized to [0, 1]
         self.com_goal = self.opti.parameter(6)  # linear + angular momentum
+        self.step_height = self.opti.parameter(1)  # step height
         self.arm_f_des = self.opti.parameter(3)  # force at end-effector
         self.arm_vel_des = self.opti.parameter(3)  # velocity at end-effector
 
@@ -124,10 +125,9 @@ class OCP_RNEA:
             for idx, frame_id in enumerate(self.ee_ids):
                 f_e = forces[idx * 3 : (idx + 1) * 3]
 
-                # Determine contact and bezier index from schedule
-                schedule_idx = self.contact_schedule[idx, i]
-                in_contact = casadi.if_else(schedule_idx == 0, 1, 0)
-                bezier_idx = schedule_idx - 1
+                # Get contact schedule info
+                in_contact = self.contact_schedule[idx, i]
+                bezier_idx = self.bezier_schedule[idx, i]
 
                 # Friction cone
                 f_normal = f_e[2]
@@ -149,12 +149,13 @@ class OCP_RNEA:
 
                 # Track bezier velocity (only in z)
                 vel_z = vel_lin[2]
-                vel_z_des = self.gait_sequence.get_bezier_vel_z(0, bezier_idx, h=step_height)
+                vel_z_des = self.gait_sequence.get_bezier_vel_z(0, bezier_idx, h=self.step_height)
                 vel_diff = vel_z - vel_z_des
                 self.opti.subject_to((1 - in_contact) * vel_diff == 0)
 
+                # foot_z0 = 0.0384579  # depends on q0!
                 # pos_z = self.dyn.get_frame_position(frame_id)(q)[2]
-                # pos_z_des = self.gait_sequence.get_bezier_pos_z(0, bezier_idx, h=step_height)
+                # pos_z_des = self.gait_sequence.get_bezier_pos_z(foot_z0, bezier_idx, h=self.step_height)
                 # pos_diff = pos_z - pos_z_des
                 # self.opti.subject_to((1 - in_contact) * pos_diff == 0)
 
@@ -210,11 +211,15 @@ class OCP_RNEA:
 
     def update_contact_schedule(self, shift_idx=0):
         contact_schedule = self.gait_sequence.shift_contact_schedule(shift_idx)
-        contact_schedule = contact_schedule[:, :self.nodes]
-        self.opti.set_value(self.contact_schedule, contact_schedule)
+        bezier_schedule = self.gait_sequence.shift_bezier_schedule(shift_idx)
+        self.opti.set_value(self.contact_schedule, contact_schedule[:, :self.nodes])
+        self.opti.set_value(self.bezier_schedule, bezier_schedule[:, :self.nodes])
 
     def set_com_goal(self, com_goal):
         self.opti.set_value(self.com_goal, com_goal)
+
+    def set_step_height(self, step_height):
+        self.opti.set_value(self.step_height, step_height)
 
     def set_arm_task(self, arm_f_des, arm_vel_des):
         self.opti.set_value(self.arm_f_des, arm_f_des)
@@ -271,9 +276,11 @@ class OCP_RNEA:
                 solver_params = [
                     self.x_init,
                     self.contact_schedule,
+                    self.bezier_schedule,
                     self.Q_diag,
                     self.R_diag,
-                    self.com_goal
+                    self.com_goal,
+                    self.step_height
                 ]
                 if self.arm_ee_id:
                     solver_params += [
@@ -396,6 +403,10 @@ class OCP_RNEA:
 
             if not retract_all:
                 return
+            
+        x_last = self.dyn.state_integrate()(x_init, self.DX_prev[-1])
+        self.qs.append(np.array(x_last[:self.nq]))
+        self.vs.append(np.array(x_last[self.nq:]))
 
     def _retract_stacked_sol(self, sol_x, retract_all=True):
         # Retract the given solution, which contains all stacked states and inputs
