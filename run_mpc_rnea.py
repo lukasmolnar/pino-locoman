@@ -1,6 +1,7 @@
 import time
 import numpy as np
 import pinocchio as pin
+import casadi
 
 from helpers import *
 from ocp_rnea import OCP_RNEA
@@ -9,18 +10,21 @@ from ocp_rnea import OCP_RNEA
 # robot = B2(reference_pose="standing")
 robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_nodes = 14
-ocp_nodes = 8
-dt = 0.03
+gait_nodes = 20
+ocp_nodes = 12
+dt = 0.025
 
 # Only for B2G
+arm_f_des = np.array([0, 0, 0])
 arm_f_des = np.array([0, 0, 0])
 arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
+step_height = 0.1
 
 # MPC
+mpc_loops = 100
 mpc_loops = 200
 
 # Compiled solver
@@ -30,10 +34,11 @@ compile_solver = False
 compiled_sqp_data = "libsqp_data.so"
 
 debug = False  # print info
+debug = False  # print info
 
 
 def mpc_loop(ocp, robot_instance, q0, N):
-    x_init = np.concatenate((q0, np.zeros(robot_instance.model.nv)))
+    x_init = np.concatenate((q0, np.zeros(robot.nv)))
     solve_times = []
 
     # Initialize solver
@@ -48,8 +53,8 @@ def mpc_loop(ocp, robot_instance, q0, N):
         ocp.solve(retract_all=False, compiled_sqp_data=compiled_sqp_data)
         solve_times.append(ocp.solve_time)
 
-        x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
-        robot_instance.display(ocp.qs[-1])  # Display last q
+            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+            robot_instance.display(ocp.qs[-1])  # Display last q
 
     print("Avg solve time (ms): ", np.average(solve_times) * 1000)
     print("Std solve time (ms): ", np.std(solve_times) * 1000)
@@ -61,7 +66,7 @@ def main():
     robot.set_gait_sequence(gait_type, gait_nodes, dt)
     if type(robot) == B2G and not robot.ignore_arm:
         robot.add_arm_task(arm_f_des, arm_vel_des)
-    robot.initialize_weights()
+    robot.initialize_weights(dynamics="rnea")
 
     robot_instance = robot.robot
     model = robot.model
@@ -82,7 +87,9 @@ def main():
         nodes=ocp_nodes,
     )
     ocp.set_com_goal(com_goal)
+    ocp.set_step_height(step_height)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
+    ocp.set_weights(robot.Q_diag, robot.R_diag)
     ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
 
     if debug:

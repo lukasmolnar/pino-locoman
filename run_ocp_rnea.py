@@ -9,9 +9,9 @@ from ocp_rnea import OCP_RNEA
 # robot = B2(reference_pose="standing")
 robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_nodes = 14
-ocp_nodes = 8
-dt = 0.03
+gait_nodes = 20
+ocp_nodes = 12
+dt = 0.025
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
@@ -19,9 +19,10 @@ arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.1, 0, 0, 0, 0, 0])
+step_height = 0.1
 
-# Compiled solver
-solver = "osqp"
+# Solver
+solver = "fatrop"
 compile_solver = False
 
 debug = False  # print info
@@ -31,7 +32,7 @@ def main():
     robot.set_gait_sequence(gait_type, gait_nodes, dt)
     if type(robot) == B2G and not robot.ignore_arm:
         robot.add_arm_task(arm_f_des, arm_vel_des)
-    robot.initialize_weights()
+    robot.initialize_weights(dynamics="rnea")
 
     robot_instance = robot.robot
     model = robot.model
@@ -48,7 +49,9 @@ def main():
         nodes=ocp_nodes,
     )
     ocp.set_com_goal(com_goal)
+    ocp.set_step_height(step_height)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
+    ocp.set_weights(robot.Q_diag, robot.R_diag)
 
     x_init = np.concatenate((q0, np.zeros(model.nv)))
     gait_idx = 0
@@ -56,7 +59,24 @@ def main():
     ocp.update_initial_state(x_init)
     ocp.update_contact_schedule(shift_idx=gait_idx)
     ocp.init_solver(solver=solver, compile_solver=compile_solver)
-    ocp.solve(retract_all=True)
+
+    if compile_solver:
+        # Evaluate solver function that was compiled
+        contact_schedule = ocp.opti.value(ocp.contact_schedule)
+        x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
+        # lam_g_warm_start = ocp.opti.value(ocp.opti.lam_g, ocp.opti.initial())
+
+        start_time = time.time()
+        sol_x = ocp.solver_function(x_init, contact_schedule, com_goal, arm_f_des, arm_vel_des,
+                                    robot.Q_diag, robot.R_diag, x_warm_start)
+        end_time = time.time()
+        ocp.solve_time = end_time - start_time
+
+        ocp._retract_stacked_sol(sol_x, retract_all=True)
+    else:
+        ocp.solve(retract_all=True)
+
+    print("Solve time (ms):", ocp.solve_time * 1000)
 
     if debug:
         for k in range(ocp_nodes):
@@ -64,6 +84,7 @@ def main():
             v = ocp.vs[k]
             tau = ocp.taus[k]
             forces = ocp.fs[k]
+            print("k: ", k)
             print("q: ", q.T)
             print("v: ", v.T)
             print("tau: ", tau.T)
@@ -90,12 +111,9 @@ def main():
                 f_ext[joint_id] = pin.Force(f)
 
             tau_rnea = pin.rnea(model, data, q, v, a, f_ext)
-            print("tau rnea: ", tau_rnea)
 
             tau_total = np.concatenate((np.zeros(6), tau))
             print("tau gap: ", tau_total - tau_rnea)
-
-    print("Solve time (ms):", ocp.solve_time * 1000)
 
     # Visualize
     robot_instance.initViewer()
