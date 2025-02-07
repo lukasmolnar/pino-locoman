@@ -16,7 +16,6 @@ dt = 0.025
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
-arm_f_des = np.array([0, 0, 0])
 arm_vel_des = np.array([0.1, 0, 0])
 
 # Tracking goal: linear and angular momentum
@@ -25,15 +24,13 @@ step_height = 0.1
 
 # MPC
 mpc_loops = 100
-mpc_loops = 200
 
 # Compiled solver
 solver = "osqp"
-compile_solver = False
-# compiled_sqp_data = None
-compiled_sqp_data = "libsqp_data.so"
+compile_solver = True
+compiled_sqp_data = None
+# compiled_sqp_data = "libsqp_data.so"
 
-debug = False  # print info
 debug = False  # print info
 
 
@@ -53,8 +50,8 @@ def mpc_loop(ocp, robot_instance, q0, N):
         ocp.solve(retract_all=False, compiled_sqp_data=compiled_sqp_data)
         solve_times.append(ocp.solve_time)
 
-            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
-            robot_instance.display(ocp.qs[-1])  # Display last q
+        x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+        robot_instance.display(ocp.qs[-1])  # Display last q
 
     print("Avg solve time (ms): ", np.average(solve_times) * 1000)
     print("Std solve time (ms): ", np.std(solve_times) * 1000)

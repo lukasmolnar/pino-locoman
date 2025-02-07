@@ -35,7 +35,7 @@ class OCP_RNEA:
         # State and inputs to optimize
         self.nx = self.nq + self.nv  # positions + velocities
         self.ndx_opt = self.nv * 2  # position deltas + velocities
-        self.nu_opt = self.nv + self.nj + self.nf  # velocities + joint torques + forces
+        self.nu_opt = self.nj + self.nf  # joint torques + forces
 
         # Dynamics
         self.dyn = DynamicsRNEA(self.model, self.mass, self.ee_ids)
@@ -52,13 +52,14 @@ class OCP_RNEA:
         self.x_init = self.opti.parameter(self.nx)  # initial state
         self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes) # in_contact: 0 or 1
         self.bezier_schedule = self.opti.parameter(self.n_feet, self.nodes) # bez_idx: normalized to [0, 1]
+        self.Q_diag = self.opti.parameter(self.ndx_opt)  # state weights
+        self.R_diag = self.opti.parameter(self.nu_opt)  # input weights
+
         self.com_goal = self.opti.parameter(6)  # linear + angular momentum
         self.step_height = self.opti.parameter(1)  # step height
         self.arm_f_des = self.opti.parameter(3)  # force at end-effector
         self.arm_vel_des = self.opti.parameter(3)  # velocity at end-effector
 
-        self.Q_diag = self.opti.parameter(self.ndx_opt)  # state weights
-        self.R_diag = self.opti.parameter(self.nu_opt)  # input weights
         self.Q = casadi.diag(self.Q_diag)
         self.R = casadi.diag(self.R_diag)
 
@@ -70,7 +71,7 @@ class OCP_RNEA:
         if self.arm_ee_id:
             # TODO: Check if arm force = 0 is ok (it is constrained later)
             f_des = np.concatenate((f_des, np.zeros(3)))
-        u_des = np.concatenate((np.zeros(robot.nv + robot.nj), f_des))  # zero velocity + torque
+        u_des = np.concatenate((np.zeros(robot.nj), f_des))  # zero torque
 
         # OBJECTIVE
         obj = 0
@@ -85,7 +86,7 @@ class OCP_RNEA:
             err_u = u - u_des
             obj += 0.5 * err_dx.T @ self.Q @ err_dx
             obj += 0.5 * err_u.T @ self.R @ err_u
-        
+
         # Final state
         dx = self.DX_opt[self.nodes]
         err_dx = dx - dx_des
@@ -103,20 +104,18 @@ class OCP_RNEA:
             u = self.U_opt[i]
             q = x[:self.nq]
             v = x[self.nq:]
-            v_next_des = u[:self.nv]
-            tau_j = u[self.nv : self.nv + self.nj]
-            forces = u[self.nv + self.nj :]
+            tau_j = u[:self.nj]
+            forces = u[self.nj:]
 
             # Dynamics constraint
             dx_next = self.DX_opt[i+1]
             dq_next = dx_next[:self.nv]
             x_next = self.dyn.state_integrate()(self.x_init, dx_next)
             v_next = x_next[self.nq:]
-            self.opti.subject_to(dq_next == dq + 0.5 * (v + v_next_des) * self.dt)
-            self.opti.subject_to(v_next == v_next_des)
+            self.opti.subject_to(dq_next == dq + 0.5 * (v + v_next) * self.dt)
 
             # RNEA constraint
-            a = (v_next_des - v) / self.dt  # finite difference
+            a = (v_next - v) / self.dt  # finite difference
             tau_rnea = self.dyn.rnea_dynamics(self.arm_ee_id)(q, v, a, forces)
             self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
             if i < 2:
@@ -381,7 +380,11 @@ class OCP_RNEA:
             ocp_params = casadi.vertcat(
                 self.opti.value(self.x_init),
                 casadi.vec(self.opti.value(self.contact_schedule)),  # flattened
+                casadi.vec(self.opti.value(self.bezier_schedule)),  # flattened
+                self.opti.value(self.Q_diag),
+                self.opti.value(self.R_diag),
                 self.opti.value(self.com_goal),
+                self.opti.value(self.step_height),
             )
             if self.arm_ee_id:
                 ocp_params = casadi.vertcat(
@@ -406,14 +409,11 @@ class OCP_RNEA:
                 print("Data time (ms): ", (end - start) * 1000)
 
                 start = time.time()
-
-                grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, ocp_params)
                 A = np.array(J_g.nonzeros())
                 q = np.array(grad_f)
                 l = np.array(lbg - g)
                 u = np.array(ubg - g)
                 self.osqp_prob.update(q=q, Ax=A, l=l, u=u)
-
                 end = time.time()
                 print("Update time (ms): ", (end - start) * 1000)
 
@@ -435,7 +435,7 @@ class OCP_RNEA:
             print("Total solve time (ms): ", (end_time - start_time) * 1000)
             self.solve_time = end_time - start_time
 
-            self._retract_sqp_sol(current_x, retract_all)
+            self._retract_stacked_sol(current_x, retract_all)
 
     def _retract_opti_sol(self, retract_all=True):
         # Retract self.opti solution stored in self.sol
@@ -448,6 +448,7 @@ class OCP_RNEA:
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
             self.qs.append(np.array(x_sol[:self.nq]))
             self.vs.append(np.array(x_sol[self.nq:]))
+            # TODO: Handle both Fatrop and OSQP
             self.vdes.append(np.array(u_sol[:self.nv]))
             self.taus.append(np.array(u_sol[self.nv : self.nv + self.nj]))
             self.fs.append(np.array(u_sol[self.nv + self.nj :]))
@@ -475,6 +476,7 @@ class OCP_RNEA:
             self.U_prev.append(np.array(u_sol))
             
             if i == 0 or retract_all:
+                # TODO: Handle both Fatrop and OSQP
                 self.qs.append(np.array(x_sol[:self.nq]))
                 self.vs.append(np.array(x_sol[self.nq:]))
                 self.taus.append(np.array(u_sol[:self.nj]))

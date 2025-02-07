@@ -78,7 +78,8 @@ class Robot:
             ))
             self.Q_diag = np.concatenate((Q_pos_diag, Q_vel_diag))
             self.R_diag = np.concatenate((
-                [1e-4] * self.nv,  # velocities
+                # TODO: Handle both Fatrop and OSQP
+                # [1e-4] * self.nv,  # velocities
                 [1e-4] * self.nj,  # joint torques
                 [1e-4] * self.nf,  # forces
             ))
