@@ -22,7 +22,7 @@ com_goal = np.array([0.1, 0, 0, 0, 0, 0])
 step_height = 0.1
 
 # Solver
-solver = "fatrop"
+solver = "osqp"
 compile_solver = False
 
 debug = False  # print info
@@ -60,8 +60,8 @@ def main():
     ocp.update_contact_schedule(shift_idx=gait_idx)
     ocp.init_solver(solver=solver, compile_solver=compile_solver)
 
-    if compile_solver:
-        # Evaluate solver function that was compiled
+    if compile_solver and solver == "fatrop":
+        # Evaluate Fatrop solver function
         contact_schedule = ocp.opti.value(ocp.contact_schedule)
         x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
         # lam_g_warm_start = ocp.opti.value(ocp.opti.lam_g, ocp.opti.initial())

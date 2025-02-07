@@ -25,12 +25,11 @@ step_height = 0.1
 # MPC
 mpc_loops = 100
 
-# Solver
-solver = "fatrop"
-warm_start = True
+# Compiled solver
+solver = "osqp"
 compile_solver = True
-load_compiled_solver = None
-# load_compiled_solver = "libsolver_b2_warm_N12_dt25.so"
+compiled_sqp_data = None
+# compiled_sqp_data = "libsqp_data.so"
 
 debug = False  # print info
 
@@ -39,64 +38,20 @@ def mpc_loop(ocp, robot_instance, q0, N):
     x_init = np.concatenate((q0, np.zeros(robot.nv)))
     solve_times = []
 
-    if compile_solver or load_compiled_solver:
-        if load_compiled_solver:
-            # Load solver
-            solver_function = casadi.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
-        else:
-            # Initialize solver
-            ocp.init_solver(solver=solver, compile_solver=compile_solver, warm_start=warm_start)
-            solver_function = ocp.solver_function
+    # Initialize solver
+    ocp.update_initial_state(x_init)
+    ocp.update_contact_schedule(shift_idx=0)
+    ocp.init_solver(solver=solver, compile_solver=compile_solver)
 
-        # Warm start (dual variables)
-        # lam_g_warm_start = ocp.opti.value(ocp.opti.lam_g, ocp.opti.initial())
+    for k in range(N):
+        ocp.update_initial_state(x_init)
+        ocp.update_contact_schedule(shift_idx=k)
+        ocp.warm_start()
+        ocp.solve(retract_all=False, compiled_sqp_data=compiled_sqp_data)
+        solve_times.append(ocp.solve_time)
 
-        for k in range(N):
-            # Get parameters
-            ocp.update_initial_state(x_init)
-            ocp.update_contact_schedule(shift_idx=k)
-            contact_schedule = ocp.opti.value(ocp.contact_schedule)
-            bezier_schedule = ocp.opti.value(ocp.bezier_schedule)
-
-            params = [x_init, contact_schedule, bezier_schedule, robot.Q_diag, robot.R_diag,
-                      com_goal, step_height]
-
-            if ocp.arm_ee_id:
-                params += [arm_f_des, arm_vel_des]
-            if warm_start:
-                ocp.warm_start()
-                x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
-                params += [x_warm_start]
-            
-            # Solve
-            start_time = time.time()
-            sol_x = solver_function(*params)
-            end_time = time.time()
-            sol_time = end_time - start_time
-            solve_times.append(sol_time)
-
-            print("Solve time (ms): ", sol_time * 1000)
-
-            # Retract solution
-            ocp._retract_stacked_sol(sol_x, retract_all=False)
-            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
-            # lam_g_warm_start = sol_lam_g
-
-            robot_instance.display(ocp.qs[-1])  # Display last q
-
-    else:
-        # Initialize solver
-        ocp.init_solver(solver=solver, compile_solver=compile_solver)
-
-        for k in range(N):
-            ocp.update_initial_state(x_init)
-            ocp.update_contact_schedule(shift_idx=k)
-            ocp.warm_start()
-            ocp.solve(retract_all=False)
-            solve_times.append(ocp.solve_time)
-
-            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
-            robot_instance.display(ocp.qs[-1])  # Display last q
+        x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+        robot_instance.display(ocp.qs[-1])  # Display last q
 
     print("Avg solve time (ms): ", np.average(solve_times) * 1000)
     print("Std solve time (ms): ", np.std(solve_times) * 1000)
