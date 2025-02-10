@@ -102,6 +102,13 @@ class B2(Robot):
         super().__init__(urdf_path, srdf_path, reference_pose)
 
 
+class Go2(Robot):
+    def __init__(self, reference_pose="standing"):
+        urdf_path = "go2_description/urdf/go2.urdf"
+        srdf_path = "go2_description/srdf/go2.srdf"
+        super().__init__(urdf_path, srdf_path, reference_pose)
+
+
 class B2G(Robot):
     def __init__(self, reference_pose="standing_with_arm_up", ignore_arm=False):
         urdf_path = "b2g_description/urdf/b2g.urdf"
