@@ -16,10 +16,10 @@ dt = 0.025
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.1, 0, 0])
+arm_vel_des = np.array([0.2, 0, 0])
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([0.1, 0, 0, 0, 0, 0])
+com_goal = np.array([0.2, 0, 0, 0, 0, 0])
 step_height = 0.1
 
 # MPC
@@ -30,7 +30,7 @@ solver = "fatrop"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_b2_warm_N12_dt25.so"
+# load_compiled_solver = "libsolver_b2_cold_N12_dt25.so"
 
 debug = False  # print info
 
@@ -77,11 +77,14 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
             print("Solve time (ms): ", sol_time * 1000)
 
-            # Retract solution
+            # Retract solution and update x_init
             ocp._retract_stacked_sol(sol_x, retract_all=False)
-            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
-            # lam_g_warm_start = sol_lam_g
+            x_pred = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+            x_init = ocp._simulate_step(x_init, ocp.U_prev[0], dt)  # TODO: adjust dt
+            x_diff = x_pred - x_init
+            print("x_diff norm: ", np.linalg.norm(x_diff))
 
+            # lam_g_warm_start = sol_lam_g
             robot_instance.display(ocp.qs[-1])  # Display last q
 
     else:
@@ -157,7 +160,7 @@ def main():
                 joint_id = model.frames[frame_id].parentJoint
                 translation_joint_to_contact_frame = model.frames[frame_id].placement.translation
                 rotation_world_to_joint_frame = data.oMi[joint_id].rotation.T
-                f_world = forces[idx * 3 : (idx + 1) * 3]
+                f_world = forces[idx * 3 : (idx + 1) * 3].flatten()
                 print(f"force {frame_id}: {f_world}")
 
                 f_lin = rotation_world_to_joint_frame @ f_world
@@ -167,7 +170,7 @@ def main():
 
             tau_rnea = pin.rnea(model, data, q, v, a, f_ext)
 
-            tau_total = np.concatenate((np.zeros(6), tau))
+            tau_total = np.concatenate((np.zeros(6), tau.flatten()))
             print("tau gap: ", tau_total - tau_rnea)
 
     # Visualize

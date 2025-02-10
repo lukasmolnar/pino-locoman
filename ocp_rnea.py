@@ -2,6 +2,7 @@ import numpy as np
 import casadi
 import time
 import osqp
+import pinocchio as pin
 from scipy import sparse
 
 from helpers import *
@@ -426,8 +427,9 @@ class OCP_RNEA:
             if i == 0 or retract_all:
                 self.qs.append(np.array(x_sol[:self.nq]))
                 self.vs.append(np.array(x_sol[self.nq:]))
-                self.taus.append(np.array(u_sol[:self.nj]))
-                self.fs.append(np.array(u_sol[self.nj:]))
+                self.vdes.append(np.array(u_sol[:self.nv]))
+                self.taus.append(np.array(u_sol[self.nv : self.nv + self.nj]))
+                self.fs.append(np.array(u_sol[self.nv + self.nj :]))
 
         dx_last = sol_x[self.nodes*nx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)
@@ -438,6 +440,37 @@ class OCP_RNEA:
             self.vs.append(np.array(x_last[self.nq:]))
             self.taus.append(np.array(u_sol[:self.nj]))
             self.fs.append(np.array(u_sol[self.nj:]))
+
+    def _simulate_step(self, x_init, u, dt):
+        q = x_init[:self.nq]
+        v = x_init[self.nq:]
+        tau = u[self.nv : self.nv + self.nj]
+        forces = u[self.nv + self.nj :]
+
+        pin.framesForwardKinematics(self.model, self.data, q)
+        f_ext = [pin.Force(np.zeros(6)) for _ in range(self.model.njoints)]
+        for idx, frame_id in enumerate(self.ee_ids):
+            joint_id = self.model.frames[frame_id].parentJoint
+            translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation
+            rotation_world_to_joint_frame = self.data.oMi[joint_id].rotation.T
+            f_world = forces[idx * 3 : (idx + 1) * 3].flatten()
+
+            f_lin = rotation_world_to_joint_frame @ f_world
+            f_ang = np.cross(translation_joint_to_contact_frame, f_lin)
+            f = np.concatenate((f_lin, f_ang))
+            f_ext[joint_id] = pin.Force(f)
+
+        tau_all = np.concatenate((np.zeros(6), tau.flatten()))
+        a = pin.aba(self.model, self.data, q, v, tau_all, f_ext)
+
+        dq = v * dt + 0.5 * a * dt**2
+        dv = a * dt
+
+        q_next = pin.integrate(self.model, q, dq)
+        v_next = v + dv
+        x_next = np.concatenate((q_next, v_next))
+
+        return x_next
 
     def _armijo_line_search(self, current_x, dx, ocp_params):
         # Params
