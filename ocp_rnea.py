@@ -190,6 +190,7 @@ class OCP_RNEA:
             # Warm start
             self.opti.set_initial(self.DX_opt[i], np.zeros(self.ndx_opt))
             self.opti.set_initial(self.U_opt[i], u_des)
+            # self.opti.set_initial(self.U_opt[i], np.zeros(self.nu_opt))
 
         # Warm start
         self.opti.set_initial(self.DX_opt[self.nodes], np.zeros(self.ndx_opt))
@@ -239,14 +240,31 @@ class OCP_RNEA:
                 DX_diff = self.DX_prev[i+1] - DX_init
                 self.opti.set_initial(self.DX_opt[i], DX_diff)
             # Last node
-            # DX_diff = self.DX_prev[-1] - DX_init
-            # self.opti.set_initial(self.DX_opt[self.nodes], DX_diff)
+            DX_diff = self.DX_prev[-1] - DX_init
+            self.opti.set_initial(self.DX_opt[-1], DX_diff)
+
+        contact_schedule = self.opti.value(self.contact_schedule)
+        f_gravity = 9.81 * self.mass / self.n_contact_feet
 
         if self.U_prev is not None:
             for i in range(self.nodes - 1):
+                # in_contact = contact_schedule[:, i]
+                # f_des = []
+                # for idx in range(self.n_feet):
+                #     f_des += [0, 0, f_gravity * in_contact[idx]]                    
+                # U_prev = self.U_prev[i+1]
+                # U_new = np.concatenate((U_prev[:self.nv + self.nj].flatten(), f_des))
+                # self.opti.set_initial(self.U_opt[i], U_new)
                 self.opti.set_initial(self.U_opt[i], self.U_prev[i+1])
             # Last node
-            # self.opti.set_initial(self.U_opt[self.nodes-1], self.U_prev[-1])
+            # in_contact = contact_schedule[:, -1]
+            # f_des = []
+            # for idx in range(self.n_feet):
+            #     f_des += [0, 0, f_gravity * in_contact[idx]]
+            # U_prev = self.U_prev[-1]
+            # U_new = np.concatenate((U_prev[:self.nv + self.nj].flatten(), f_des))
+            # self.opti.set_initial(self.U_opt[-1], U_new)
+            self.opti.set_initial(self.U_opt[-1], self.U_prev[-1])
 
         if self.lam_g is not None:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
@@ -263,7 +281,7 @@ class OCP_RNEA:
             opts["fatrop"] = {
                 "print_level": 1,
                 "max_iter": 6,
-                "tol": 1e-3,
+                "tol": 5e-3,
                 "mu_init": 1e-4,
                 "warm_start_init_point": True,
                 "warm_start_mult_bound_push": 1e-7,
