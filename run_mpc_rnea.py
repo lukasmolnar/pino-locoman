@@ -30,7 +30,7 @@ solver = "fatrop"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_go2_cold_lim.so"
+# load_compiled_solver = "libsolver_go2_warm_tau.so"
 
 debug = False  # print info
 
@@ -63,7 +63,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
             n_contacts = ocp.opti.value(ocp.n_contacts)
 
             params = [x_init, tau_prev, contact_schedule, bezier_schedule, n_contacts,
-                      robot.Q_diag, robot.R_diag, com_goal, step_height]
+                      robot.Q_diag, robot.R_diag, robot.W_diag, com_goal, step_height]
 
             if ocp.arm_ee_id:
                 params += [arm_f_des, arm_vel_des]

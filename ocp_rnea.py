@@ -288,6 +288,7 @@ class OCP_RNEA:
                     self.n_contacts,
                     self.Q_diag,
                     self.R_diag,
+                    self.W_diag,
                     self.com_goal,
                     self.step_height
                 ]
