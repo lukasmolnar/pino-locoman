@@ -51,12 +51,14 @@ def main():
     ocp.set_com_goal(com_goal)
     ocp.set_step_height(step_height)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
-    ocp.set_weights(robot.Q_diag, robot.R_diag)
+    ocp.set_weights(robot.Q_diag, robot.R_diag, robot.W_diag)
 
     x_init = np.concatenate((q0, np.zeros(model.nv)))
+    tau_prev = np.zeros(robot.nj)
     gait_idx = 0
 
     ocp.update_initial_state(x_init)
+    ocp.update_previous_torques(tau_prev)
     ocp.update_gait_sequence(shift_idx=gait_idx)
     ocp.init_solver(solver=solver, compile_solver=compile_solver, warm_start=False)
 
@@ -68,7 +70,7 @@ def main():
         # x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
         # lam_g_warm_start = ocp.opti.value(ocp.opti.lam_g, ocp.opti.initial())
 
-        params = [x_init, contact_schedule, bezier_schedule, n_contacts,
+        params = [x_init, tau_prev, contact_schedule, bezier_schedule, n_contacts,
                   robot.Q_diag, robot.R_diag, com_goal, step_height]
         if ocp.arm_ee_id:
             params += [arm_f_des, arm_vel_des]

@@ -90,6 +90,9 @@ class Robot:
                 [1e-4] * self.nj,  # joint torques
             ))
 
+            # Additional weights
+            self.W_diag = np.array([1] * self.nj)  # keep torque close to previous solution
+
         else:
             raise ValueError(f"Dynamics: {dynamics} not supported")
 

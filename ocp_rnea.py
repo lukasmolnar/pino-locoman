@@ -50,6 +50,7 @@ class OCP_RNEA:
 
         # Parameters
         self.x_init = self.opti.parameter(self.nx)  # initial state
+        self.tau_prev = self.opti.parameter(self.nj)  # previous joint torques
         self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes) # in_contact: 0 or 1
         self.bezier_schedule = self.opti.parameter(self.n_feet, self.nodes) # bez_idx: normalized to [0, 1]
         self.n_contacts = self.opti.parameter(1)  # number of contact feet
@@ -60,8 +61,10 @@ class OCP_RNEA:
 
         self.Q_diag = self.opti.parameter(self.ndx_opt)  # state weights
         self.R_diag = self.opti.parameter(self.nu_opt)  # input weights (with torques)
+        self.W_diag = self.opti.parameter(self.nj)  # additional weights for joint torques
         self.Q = ca.diag(self.Q_diag)
         self.R = ca.diag(self.R_diag)
+        self.W = ca.diag(self.W_diag)
 
         # Desired state and input
         v_des = ca.vertcat(self.com_goal, [0] * self.nj)
@@ -74,15 +77,19 @@ class OCP_RNEA:
 
         # OBJECTIVE
         obj = 0
-
-        # Tracking and regularization
         for i in range(self.nodes):
+            # Track desired state and input
             dx = self.DX_opt[i]
             u = self.U_opt[i]
             err_dx = dx - dx_des
             err_u = u - u_des
             obj += 0.5 * err_dx.T @ self.Q @ err_dx
             obj += 0.5 * err_u.T @ self.R @ err_u
+
+        # Keep initial torque close to previous solution
+        tau_0 = self.U_opt[0][self.nv + self.nf :]
+        err_tau = tau_0 - self.tau_prev
+        obj += 0.5 * err_tau.T @ self.W @ err_tau
 
         # Final state
         dx = self.DX_opt[self.nodes]
@@ -203,6 +210,9 @@ class OCP_RNEA:
     def update_initial_state(self, x_init):
         self.opti.set_value(self.x_init, x_init)
 
+    def update_previous_torques(self, tau_prev):
+        self.opti.set_value(self.tau_prev, tau_prev)
+
     def update_gait_sequence(self, shift_idx=0):
         contact_schedule = self.gait_sequence.shift_contact_schedule(shift_idx)
         bezier_schedule = self.gait_sequence.shift_bezier_schedule(shift_idx)
@@ -221,9 +231,10 @@ class OCP_RNEA:
         self.opti.set_value(self.arm_f_des, arm_f_des)
         self.opti.set_value(self.arm_vel_des, arm_vel_des)
 
-    def set_weights(self, Q_diag, R_diag):
+    def set_weights(self, Q_diag, R_diag, W_diag):
         self.opti.set_value(self.Q_diag, Q_diag)
         self.opti.set_value(self.R_diag, R_diag)
+        self.opti.set_value(self.W_diag, W_diag)
 
     def warm_start(self):
         # Shift previous solution
@@ -271,6 +282,7 @@ class OCP_RNEA:
             if compile_solver:
                 solver_params = [
                     self.x_init,
+                    self.tau_prev,
                     self.contact_schedule,
                     self.bezier_schedule,
                     self.n_contacts,
@@ -435,6 +447,11 @@ class OCP_RNEA:
         if retract_all:
             self.qs.append(np.array(x_last[:self.nq]))
             self.vs.append(np.array(x_last[self.nq:]))
+
+    def _get_torque_sol(self, idx):
+        u_sol = self.U_prev[idx]
+        tau_sol = u_sol[self.nv + self.nf :]
+        return tau_sol
 
     def _simulate_step(self, x_init, u, dt):
         q = x_init[:self.nq]
