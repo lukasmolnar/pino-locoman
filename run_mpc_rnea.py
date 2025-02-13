@@ -1,14 +1,14 @@
 import time
 import numpy as np
 import pinocchio as pin
-import casadi
+import casadi as ca
 
 from helpers import *
 from ocp_rnea import OCP_RNEA
 
 # Problem parameters
-# robot = B2(reference_pose="standing")
-robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
+robot = Go2(reference_pose="standing")
+# robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_nodes = 20
 ocp_nodes = 12
@@ -20,7 +20,7 @@ arm_vel_des = np.array([0.2, 0, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.2, 0, 0, 0, 0, 0])
-step_height = 0.1
+step_height = 0.05
 
 # MPC
 mpc_loops = 100
@@ -30,7 +30,7 @@ solver = "fatrop"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_b2_cold_N12_dt25.so"
+# load_compiled_solver = "libsolver_go2_cold_lim.so"
 
 debug = False  # print info
 
@@ -42,7 +42,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
     if compile_solver or load_compiled_solver:
         if load_compiled_solver:
             # Load solver
-            solver_function = casadi.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
+            solver_function = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
         else:
             # Initialize solver
             ocp.init_solver(solver=solver, compile_solver=compile_solver, warm_start=warm_start)
@@ -54,12 +54,13 @@ def mpc_loop(ocp, robot_instance, q0, N):
         for k in range(N):
             # Get parameters
             ocp.update_initial_state(x_init)
-            ocp.update_contact_schedule(shift_idx=k)
+            ocp.update_gait_sequence(shift_idx=k)
             contact_schedule = ocp.opti.value(ocp.contact_schedule)
             bezier_schedule = ocp.opti.value(ocp.bezier_schedule)
+            n_contacts = ocp.opti.value(ocp.n_contacts)
 
-            params = [x_init, contact_schedule, bezier_schedule, robot.Q_diag, robot.R_diag,
-                      com_goal, step_height]
+            params = [x_init, contact_schedule, bezier_schedule, n_contacts,
+                      robot.Q_diag, robot.R_diag, com_goal, step_height]
 
             if ocp.arm_ee_id:
                 params += [arm_f_des, arm_vel_des]
@@ -67,7 +68,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
                 ocp.warm_start()
                 x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
                 params += [x_warm_start]
-            
+
             # Solve
             start_time = time.time()
             sol_x = solver_function(*params)
@@ -93,7 +94,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
         for k in range(N):
             ocp.update_initial_state(x_init)
-            ocp.update_contact_schedule(shift_idx=k)
+            ocp.update_gait_sequence(shift_idx=k)
             ocp.warm_start()
             ocp.solve(retract_all=False)
             solve_times.append(ocp.solve_time)
