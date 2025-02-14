@@ -2,6 +2,7 @@ import time
 import numpy as np
 import pinocchio as pin
 import casadi as ca
+import matplotlib.pyplot as plt
 
 from helpers import *
 from ocp_rnea import OCP_RNEA
@@ -10,17 +11,17 @@ from ocp_rnea import OCP_RNEA
 robot = Go2(reference_pose="standing")
 # robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_nodes = 20
-ocp_nodes = 12
-dt = 0.025
+gait_nodes = 24
+ocp_nodes = 16
+dt = 0.02
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.2, 0, 0])
+arm_vel_des = np.array([0.3, 0, 0])
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([0.2, 0, 0, 0, 0, 0])
-step_height = 0.05
+com_goal = np.array([0.3, 0, 0, 0, 0, 0])
+step_height = 0.08
 
 # MPC
 mpc_loops = 100
@@ -30,9 +31,10 @@ solver = "fatrop"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_go2_warm_tau.so"
+# load_compiled_solver = "libsolver_go2_warm_N16_dt20.so"
 
 debug = False  # print info
+plot = False
 
 
 def mpc_loop(ocp, robot_instance, q0, N):
@@ -184,6 +186,30 @@ def main():
 
             tau_total = np.concatenate((np.zeros(6), tau.flatten()))
             print("tau gap: ", tau_total - tau_rnea)
+
+    if plot:
+        # Plot q, v, tau
+        fig, axs = plt.subplots(3, 1, figsize=(10, 15))
+
+        axs[0].set_title("Joint positions (q)")
+        for j in range(ocp.nj):
+            # Ignore base (quaternion)
+            axs[0].plot([q[7 + j] for q in ocp.qs], label=f"joint {j}")
+        axs[0].legend()
+
+        axs[1].set_title("Joint velocities (v)")
+        for j in range(ocp.nj):
+            # Ignore base
+            axs[1].plot([v[6 + j] for v in ocp.vs], label=f"joint {j}")
+        axs[1].legend()
+
+        axs[2].set_title("Joint torques (tau)")
+        for j in range(ocp.nj):
+            axs[2].plot([tau[j] for tau in ocp.taus], label=f"joint {j}")
+        axs[2].legend()
+
+        plt.tight_layout()
+        plt.show()
 
     # Visualize
     for _ in range(50):

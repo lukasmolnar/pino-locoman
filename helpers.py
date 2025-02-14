@@ -2,6 +2,7 @@ from os.path import dirname, abspath
 
 import numpy as np
 import pinocchio as pin
+import casadi as ca
 from pinocchio.robot_wrapper import RobotWrapper
 
 
@@ -70,7 +71,7 @@ class Robot:
                 [10000] * 2,  # base rot x/y
                 [0],  # base rot z
             ))
-            Q_joint_pos_diag = np.tile([1000, 10, 10], 4)  # hip, thigh, calf
+            Q_joint_pos_diag = np.tile([1000, 100, 100], 4)  # hip, thigh, calf
 
             if self.arm_ee_id:
                 Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
@@ -85,13 +86,16 @@ class Robot:
 
             self.Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
             self.R_diag = np.concatenate((
-                [1e-4] * self.nv,  # velocities
-                [1e-4] * self.nf,  # forces
-                [1e-4] * self.nj,  # joint torques
+                [1e-3] * self.nv,  # velocities
+                [1e-3] * self.nf,  # forces
+                [1e-3] * self.nj,  # joint torques
             ))
 
             # Additional weights
-            self.W_diag = np.array([1] * self.nj)  # keep torque close to previous solution
+            self.W_diag = np.concatenate((
+                [1e-1] * self.nj,  # keep tau_0 close to tau_prev
+                [1e-2] * self.nj,  # keep tau_1 close to tau_prev
+            ))
 
         else:
             raise ValueError(f"Dynamics: {dynamics} not supported")
@@ -218,17 +222,18 @@ class GaitSequence:
         shift_idx %= self.gait_nodes
         return np.roll(self.bezier_schedule, -shift_idx, axis=1)
 
-    def get_bezier_pos_z(self, p0_z, idx, h=0.1):
-        # NOTE: idx needs to be normalized to [0, 1]
-        p1_z = p0_z + 2 * h  # control point
-        p2_z = p0_z
-
-        return (1 - idx)**2 * p0_z + 2 * (1 - idx) * idx * p1_z + idx**2 * p2_z
-
     def get_bezier_vel_z(self, p0_z, idx, h=0.1):
         # NOTE: idx needs to be normalized to [0, 1]
         T = self.N * self.dt  # period in seconds
-        p1_z = p0_z + 2 * h  # control point
-        p2_z = p0_z
 
-        return (2 * (1 - idx) * (p1_z - p0_z) + 2 * idx * (p2_z - p1_z)) / T
+        # Implementation from crl-loco
+        vel_z = ca.if_else(
+            idx < 0.5,
+            self.cubic_bezier_derivative(p0_z, h, 2 * idx),
+            self.cubic_bezier_derivative(h, p0_z, 2 * idx - 1)
+        ) * 2 / T
+
+        return vel_z
+
+    def cubic_bezier_derivative(self, p0, p1, idx):
+        return 6 * idx * (1 - idx) * (p1 - p0)
