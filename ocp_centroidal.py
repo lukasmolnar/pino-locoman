@@ -1,7 +1,6 @@
-import numpy as np
-import casadi
 import time
-import osqp
+import numpy as np
+import casadi as ca
 from scipy import sparse
 
 from helpers import *
@@ -16,7 +15,7 @@ class OCP_Centroidal:
             step_height=0.1,
             mu=0.7,
         ):
-        self.opti = casadi.Opti()
+        self.opti = ca.Opti()
         self.model = robot.model
         self.data = robot.data
         self.gait_sequence = robot.gait_sequence
@@ -56,7 +55,7 @@ class OCP_Centroidal:
         self.arm_vel_des = self.opti.parameter(3)  # velocity at end-effector
 
         # Desired state and input
-        x_des = casadi.vertcat(self.com_goal, robot.q0)
+        x_des = ca.vertcat(self.com_goal, robot.q0)
         dx_des = self.dyn.state_difference()(self.x_init, x_des)
         dx_des = dx_des[self.dx_opt_indices]
         f_des = np.tile([0, 0, 9.81 * self.mass / n_contact_feet], n_feet)
@@ -95,7 +94,7 @@ class OCP_Centroidal:
             forces = u[:robot.nf]
             dq_j = u[robot.nf:]
             dq_b = self.dyn.get_base_velocity()(h, q, dq_j)
-            dq = casadi.vertcat(dq_b, dq_j)
+            dq = ca.vertcat(dq_b, dq_j)
 
             # Dynamics constraint
             dx_next = self.DX_opt[i+1]
@@ -111,7 +110,7 @@ class OCP_Centroidal:
 
                 # Determine contact and bezier index from schedule
                 schedule_idx = self.contact_schedule[idx, i]
-                in_contact = casadi.if_else(schedule_idx == 0, 1, 0)
+                in_contact = ca.if_else(schedule_idx == 0, 1, 0)
                 bezier_idx = schedule_idx - 1
 
                 # Friction cone
@@ -238,6 +237,7 @@ class OCP_Centroidal:
                 solver_function.generate("compiled_solver.c")
 
         elif solver == "osqp":
+            import osqp
             # Get all info from self.opti
             x = self.opti.x
             p = self.opti.p
@@ -246,14 +246,14 @@ class OCP_Centroidal:
             lbg = self.opti.lbg
             ubg = self.opti.ubg
 
-            J_g = casadi.jacobian(g, x)
-            hess_f, grad_f = casadi.hessian(f, x)
+            J_g = ca.jacobian(g, x)
+            hess_f, grad_f = ca.hessian(f, x)
 
             # Store data functions
             # TODO: Code generation
-            self.sqp_data = casadi.Function("sqp_data", [x, p], [hess_f, grad_f, J_g, g, lbg, ubg]).expand()
-            self.f_data = casadi.Function("f_data", [x, p], [f, grad_f]).expand()
-            self.g_data = casadi.Function("g_data", [x, p], [g, lbg, ubg]).expand()
+            self.sqp_data = ca.Function("sqp_data", [x, p], [hess_f, grad_f, J_g, g, lbg, ubg]).expand()
+            self.f_data = ca.Function("f_data", [x, p], [f, grad_f]).expand()
+            self.g_data = ca.Function("g_data", [x, p], [g, lbg, ubg]).expand()
 
             # OSQP options
             self.osqp_opts = {
@@ -295,13 +295,13 @@ class OCP_Centroidal:
             self.lam_g = self.sol.value(self.opti.lam_g)
 
         elif self.solver_type == "osqp":
-            ocp_params = casadi.vertcat(
+            ocp_params = ca.vertcat(
                 self.opti.value(self.x_init),
-                casadi.vec(self.opti.value(self.contact_schedule)),  # flattened
+                ca.vec(self.opti.value(self.contact_schedule)),  # flattened
                 self.opti.value(self.com_goal),
             )
             if self.arm_ee_id:
-                ocp_params = casadi.vertcat(
+                ocp_params = ca.vertcat(
                     ocp_params,
                     self.opti.value(self.arm_f_des),
                     self.opti.value(self.arm_vel_des),

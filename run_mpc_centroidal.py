@@ -1,7 +1,7 @@
 import time
 import numpy as np
 import pinocchio as pin
-import casadi
+import casadi as ca
 
 from helpers import *
 from ocp_centroidal import OCP_Centroidal
@@ -39,7 +39,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
     if load_compiled_solver:
         # Load solver
-        compiled_solver = casadi.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
+        compiled_solver = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
         ocp.hs = []
         ocp.qs = []
 
