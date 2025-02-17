@@ -1,7 +1,7 @@
 import time
 import numpy as np
 import pinocchio as pin
-import casadi
+import casadi as ca
 
 from helpers import *
 from ocp_centroidal import OCP_Centroidal
@@ -56,7 +56,7 @@ def main():
     gait_idx = 0
 
     if load_compiled_solver:
-        compiled_solver = casadi.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
+        compiled_solver = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
         contact_schedule = ocp.gait_sequence.shift_contact_schedule(gait_idx)[:,:ocp_nodes]
         start_time = time.time()
         DX_sol, U_sol = compiled_solver(x_init, contact_schedule, gait_idx)

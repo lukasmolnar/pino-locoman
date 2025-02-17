@@ -1,7 +1,6 @@
-import numpy as np
-import casadi
 import time
-import osqp
+import numpy as np
+import casadi as ca
 import pinocchio as pin
 from scipy import sparse
 
@@ -16,7 +15,7 @@ class OCP_RNEA:
             nodes,
             mu=0.7,
         ):
-        self.opti = casadi.Opti()
+        self.opti = ca.Opti()
         self.model = robot.model
         self.data = robot.data
         self.gait_sequence = robot.gait_sequence
@@ -31,17 +30,17 @@ class OCP_RNEA:
         self.ee_ids = robot.ee_ids
         self.arm_ee_id = robot.arm_ee_id
         self.n_feet = len(self.ee_ids)
-        self.n_contact_feet = self.gait_sequence.n_contacts
 
         # State and inputs to optimize
         self.nx = self.nq + self.nv  # positions + velocities
         self.ndx_opt = self.nv * 2  # position deltas + velocities
-        self.nu_opt = self.nv + self.nj + self.nf  # velocities + joint torques + forces
+        self.nu_opt = self.nv + self.nf + self.nj  # velocities + forces + torques
 
         # Dynamics
         self.dyn = DynamicsRNEA(self.model, self.mass, self.ee_ids)
 
         # Decision variables
+        # TODO: Check about removing torques for i >= 2 (but this makes problem overconstrained)
         self.DX_opt = []
         self.U_opt = []
         for i in range(self.nodes):
@@ -51,60 +50,68 @@ class OCP_RNEA:
 
         # Parameters
         self.x_init = self.opti.parameter(self.nx)  # initial state
+        self.tau_prev = self.opti.parameter(self.nj)  # previous joint torques
         self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes) # in_contact: 0 or 1
         self.bezier_schedule = self.opti.parameter(self.n_feet, self.nodes) # bez_idx: normalized to [0, 1]
+        self.n_contacts = self.opti.parameter(1)  # number of contact feet
         self.com_goal = self.opti.parameter(6)  # linear + angular momentum
         self.step_height = self.opti.parameter(1)  # step height
         self.arm_f_des = self.opti.parameter(3)  # force at end-effector
         self.arm_vel_des = self.opti.parameter(3)  # velocity at end-effector
 
         self.Q_diag = self.opti.parameter(self.ndx_opt)  # state weights
-        self.R_diag = self.opti.parameter(self.nu_opt)  # input weights
-        self.Q = casadi.diag(self.Q_diag)
-        self.R = casadi.diag(self.R_diag)
+        self.R_diag = self.opti.parameter(self.nu_opt)  # input weights (with torques)
+        self.W_diag = self.opti.parameter(2 * self.nj)  # additional weights for joint torques
+        self.Q = ca.diag(self.Q_diag)
+        self.R = ca.diag(self.R_diag)
+        self.W = ca.diag(self.W_diag)
 
         # Desired state and input
-        v_des = casadi.vertcat(self.com_goal, [0] * self.nj)
-        x_des = casadi.vertcat(robot.q0, v_des)
-        dx_des = self.dyn.state_difference()(self.x_init, x_des)
-        f_des = np.tile([0, 0, 9.81 * self.mass / self.n_contact_feet], self.n_feet)
+        v_des = ca.vertcat(self.com_goal, [0] * self.nj)
+        x_des = ca.vertcat(robot.q0, v_des)
+        dx_des = self.dyn.state_difference()(self.x_init, x_des)  # stay close to nominal state
+        f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)  # gravity compensation
         if self.arm_ee_id:
-            # TODO: Check if arm force = 0 is ok (it is constrained later)
-            f_des = np.concatenate((f_des, np.zeros(3)))
-        u_des = np.concatenate((np.zeros(robot.nv + robot.nj), f_des))  # zero velocity + torque
+            f_des = ca.vertcat(f_des, [0] * 3)  # zero force at end-effector
+        u_des = ca.vertcat(ca.MX.zeros(self.nv), f_des, ca.MX.zeros(self.nj))  # zero velocity + torque
 
         # OBJECTIVE
         obj = 0
-
-        # Tracking and regularization
         for i in range(self.nodes):
+            # Track desired state and input
             dx = self.DX_opt[i]
             u = self.U_opt[i]
             err_dx = dx - dx_des
             err_u = u - u_des
             obj += 0.5 * err_dx.T @ self.Q @ err_dx
             obj += 0.5 * err_u.T @ self.R @ err_u
-        
+
+        # Keep torques close to previous solution
+        tau_0 = self.U_opt[0][self.nv + self.nf :]
+        tau_1 = self.U_opt[1][self.nv + self.nf :]
+        tau_vec = ca.vertcat(tau_0, tau_1)
+        tau_goal = ca.vertcat(self.tau_prev, self.tau_prev)
+        err_tau = tau_vec - tau_goal
+        obj += 0.5 * err_tau.T @ self.W @ err_tau
+
         # Final state
         dx = self.DX_opt[self.nodes]
         err_dx = dx - dx_des
         obj += 0.5 * err_dx.T @ self.Q @ err_dx
 
         # CONSTRAINTS
-        # self.opti.subject_to(self.DX_opt[0][:self.nv] == [0] * self.nv)  # initial pos
         self.opti.subject_to(self.DX_opt[0] == [0] * 2 * self.nv)  # initial pos + vel
 
         for i in range(self.nodes):
             # Gather all state and input info
-            dx_opt = self.DX_opt[i]
-            dq = dx_opt[:self.nv]  # delta q, not v
-            x = self.dyn.state_integrate()(self.x_init, dx_opt)
+            dx = self.DX_opt[i]
+            dq = dx[:self.nv]  # delta q, not v
+            x = self.dyn.state_integrate()(self.x_init, dx)
             u = self.U_opt[i]
             q = x[:self.nq]
             v = x[self.nq:]
             v_next_des = u[:self.nv]
-            tau_j = u[self.nv : self.nv + self.nj]
-            forces = u[self.nv + self.nj :]
+            forces = u[self.nv : self.nv + self.nf]
 
             # Dynamics constraint
             dx_next = self.DX_opt[i+1]
@@ -120,7 +127,13 @@ class OCP_RNEA:
             self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
             if i < 2:
                 # Joint torques only for first two nodes
+                tau_j = u[self.nv + self.nf :]
                 self.opti.subject_to(tau_rnea[6:] == tau_j)  # joints
+
+                # Torque limits
+                tau_min = -robot.joint_torque_max
+                tau_max = robot.joint_torque_max
+                self.opti.subject_to(self.opti.bounded(tau_min, tau_j, tau_max))
 
             # Contact and swing constraints
             for idx, frame_id in enumerate(self.ee_ids):
@@ -154,27 +167,6 @@ class OCP_RNEA:
                 vel_diff = vel_z - vel_z_des
                 self.opti.subject_to((1 - in_contact) * vel_diff == 0)
 
-                # foot_z0 = 0.0384579  # depends on q0!
-                # pos_z = self.dyn.get_frame_position(frame_id)(q)[2]
-                # pos_z_des = self.gait_sequence.get_bezier_pos_z(foot_z0, bezier_idx, h=self.step_height)
-                # pos_diff = pos_z - pos_z_des
-                # self.opti.subject_to((1 - in_contact) * pos_diff == 0)
-
-                # Humanoid
-                if self.n_feet == 2:
-                    # Flat feet
-                    vel_ang = vel[3:]
-                    self.opti.subject_to(vel_ang == [0] * 3)
-
-            # Humanoid
-            if self.n_feet == 2:
-                # Minimum distance between feet
-                min_dist = 0.095  # standing pose is 0.1
-                foot_0 = self.dyn.get_frame_position(self.ee_ids[0])(q)
-                foot_1 = self.dyn.get_frame_position(self.ee_ids[1])(q)
-                foot_diff = foot_1 - foot_0
-                self.opti.subject_to(foot_diff[0]**2 + foot_diff[1]**2 >= min_dist**2)
-
             # Arm task
             if self.arm_ee_id:
                 # Zero end-effector velocity (linear and angular)
@@ -187,9 +179,20 @@ class OCP_RNEA:
                 f_e = forces[3*self.n_feet:]
                 self.opti.subject_to(f_e == self.arm_f_des)
 
-            # Warm start
+            # Joint limits
+            pos_min = robot.joint_pos_min
+            pos_max = robot.joint_pos_max
+            vel_min = -robot.joint_vel_max
+            vel_max = robot.joint_vel_max
+            q_j = q[7:]  # skip base quaternion
+            v_j = v[6:]  # skip base angular velocity
+            self.opti.subject_to(self.opti.bounded(pos_min, q_j, pos_max))
+            self.opti.subject_to(self.opti.bounded(vel_min, v_j, vel_max))
+
+            # Warm start: Use n_contacts from gait sequence for u_des
+            self.opti.set_value(self.n_contacts, self.gait_sequence.n_contacts)
             self.opti.set_initial(self.DX_opt[i], np.zeros(self.ndx_opt))
-            self.opti.set_initial(self.U_opt[i], u_des)
+            self.opti.set_initial(self.U_opt[i], self.opti.value(u_des))
 
         # Warm start
         self.opti.set_initial(self.DX_opt[self.nodes], np.zeros(self.ndx_opt))
@@ -204,17 +207,22 @@ class OCP_RNEA:
         self.qs = []
         self.vs = []
         self.vdes = []
-        self.taus = []
         self.fs = []
+        self.taus = []
 
     def update_initial_state(self, x_init):
         self.opti.set_value(self.x_init, x_init)
 
-    def update_contact_schedule(self, shift_idx=0):
+    def update_previous_torques(self, tau_prev):
+        self.opti.set_value(self.tau_prev, tau_prev)
+
+    def update_gait_sequence(self, shift_idx=0):
         contact_schedule = self.gait_sequence.shift_contact_schedule(shift_idx)
         bezier_schedule = self.gait_sequence.shift_bezier_schedule(shift_idx)
+        n_contacts = self.gait_sequence.n_contacts
         self.opti.set_value(self.contact_schedule, contact_schedule[:, :self.nodes])
         self.opti.set_value(self.bezier_schedule, bezier_schedule[:, :self.nodes])
+        self.opti.set_value(self.n_contacts, n_contacts)
 
     def set_com_goal(self, com_goal):
         self.opti.set_value(self.com_goal, com_goal)
@@ -226,9 +234,10 @@ class OCP_RNEA:
         self.opti.set_value(self.arm_f_des, arm_f_des)
         self.opti.set_value(self.arm_vel_des, arm_vel_des)
 
-    def set_weights(self, Q_diag, R_diag):
+    def set_weights(self, Q_diag, R_diag, W_diag):
         self.opti.set_value(self.Q_diag, Q_diag)
         self.opti.set_value(self.R_diag, R_diag)
+        self.opti.set_value(self.W_diag, W_diag)
 
     def warm_start(self):
         # Shift previous solution
@@ -262,7 +271,7 @@ class OCP_RNEA:
             }
             opts["fatrop"] = {
                 "print_level": 1,
-                "max_iter": 6,
+                "max_iter": 10,
                 "tol": 1e-3,
                 "mu_init": 1e-4,
                 "warm_start_init_point": True,
@@ -276,10 +285,13 @@ class OCP_RNEA:
             if compile_solver:
                 solver_params = [
                     self.x_init,
+                    self.tau_prev,
                     self.contact_schedule,
                     self.bezier_schedule,
+                    self.n_contacts,
                     self.Q_diag,
                     self.R_diag,
+                    self.W_diag,
                     self.com_goal,
                     self.step_height
                 ]
@@ -301,6 +313,7 @@ class OCP_RNEA:
                 self.solver_function.generate("compiled_solver.c")
 
         elif solver == "osqp":
+            import osqp
             # Get all info from self.opti
             x = self.opti.x
             p = self.opti.p
@@ -309,14 +322,14 @@ class OCP_RNEA:
             lbg = self.opti.lbg
             ubg = self.opti.ubg
 
-            J_g = casadi.jacobian(g, x)
-            hess_f, grad_f = casadi.hessian(f, x)
+            J_g = ca.jacobian(g, x)
+            hess_f, grad_f = ca.hessian(f, x)
 
             # Store data functions
             # TODO: Code generation
-            self.sqp_data = casadi.Function("sqp_data", [x, p], [hess_f, grad_f, J_g, g, lbg, ubg])
-            self.f_data = casadi.Function("f_data", [x, p], [f, grad_f])
-            self.g_data = casadi.Function("g_data", [x, p], [g, lbg, ubg])
+            self.sqp_data = ca.Function("sqp_data", [x, p], [hess_f, grad_f, J_g, g, lbg, ubg])
+            self.f_data = ca.Function("f_data", [x, p], [f, grad_f])
+            self.g_data = ca.Function("g_data", [x, p], [g, lbg, ubg])
 
             # OSQP options
             self.osqp_opts = {
@@ -344,13 +357,13 @@ class OCP_RNEA:
             self.lam_g = self.sol.value(self.opti.lam_g)
 
         elif self.solver_type == "osqp":
-            ocp_params = casadi.vertcat(
+            ocp_params = ca.vertcat(
                 self.opti.value(self.x_init),
-                casadi.vec(self.opti.value(self.contact_schedule)),  # flattened
+                ca.vec(self.opti.value(self.contact_schedule)),  # flattened
                 self.opti.value(self.com_goal),
             )
             if self.arm_ee_id:
-                ocp_params = casadi.vertcat(
+                ocp_params = ca.vertcat(
                     ocp_params,
                     self.opti.value(self.arm_f_des),
                     self.opti.value(self.arm_vel_des),
@@ -399,8 +412,8 @@ class OCP_RNEA:
             self.qs.append(np.array(x_sol[:self.nq]))
             self.vs.append(np.array(x_sol[self.nq:]))
             self.vdes.append(np.array(u_sol[:self.nv]))
-            self.taus.append(np.array(u_sol[self.nv : self.nv + self.nj]))
-            self.fs.append(np.array(u_sol[self.nv + self.nj :]))
+            self.fs.append(np.array(u_sol[self.nv : self.nv + self.nf]))
+            self.taus.append(np.array(u_sol[self.nv + self.nf :]))
 
             if not retract_all:
                 return
@@ -428,8 +441,8 @@ class OCP_RNEA:
                 self.qs.append(np.array(x_sol[:self.nq]))
                 self.vs.append(np.array(x_sol[self.nq:]))
                 self.vdes.append(np.array(u_sol[:self.nv]))
-                self.taus.append(np.array(u_sol[self.nv : self.nv + self.nj]))
-                self.fs.append(np.array(u_sol[self.nv + self.nj :]))
+                self.fs.append(np.array(u_sol[self.nv : self.nv + self.nf]))
+                self.taus.append(np.array(u_sol[self.nv + self.nf :]))
 
         dx_last = sol_x[self.nodes*nx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)
@@ -438,14 +451,17 @@ class OCP_RNEA:
         if retract_all:
             self.qs.append(np.array(x_last[:self.nq]))
             self.vs.append(np.array(x_last[self.nq:]))
-            self.taus.append(np.array(u_sol[:self.nj]))
-            self.fs.append(np.array(u_sol[self.nj:]))
+
+    def _get_torque_sol(self, idx):
+        u_sol = self.U_prev[idx]
+        tau_sol = u_sol[self.nv + self.nf :]
+        return tau_sol
 
     def _simulate_step(self, x_init, u, dt):
         q = x_init[:self.nq]
         v = x_init[self.nq:]
-        tau = u[self.nv : self.nv + self.nj]
-        forces = u[self.nv + self.nj :]
+        forces = u[self.nv : self.nv + self.nf]
+        tau = u[self.nv + self.nf :]
 
         pin.framesForwardKinematics(self.model, self.data, q)
         f_ext = [pin.Force(np.zeros(6)) for _ in range(self.model.njoints)]

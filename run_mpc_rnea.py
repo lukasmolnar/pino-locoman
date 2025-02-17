@@ -1,7 +1,8 @@
 import time
 import numpy as np
 import pinocchio as pin
-import casadi
+import casadi as ca
+import matplotlib.pyplot as plt
 
 from helpers import *
 from ocp_rnea import OCP_RNEA
@@ -10,17 +11,17 @@ from ocp_rnea import OCP_RNEA
 # robot = B2(reference_pose="standing")
 robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_nodes = 20
-ocp_nodes = 12
-dt = 0.025
+gait_nodes = 24
+ocp_nodes = 16
+dt = 0.02
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.2, 0, 0])
+arm_vel_des = np.array([0.3, 0, 0])
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([0.2, 0, 0, 0, 0, 0])
-step_height = 0.1
+com_goal = np.array([0.3, 0, 0, 0, 0, 0])
+step_height = 0.08
 
 # MPC
 mpc_loops = 100
@@ -30,19 +31,22 @@ solver = "fatrop"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_b2_cold_N12_dt25.so"
+# load_compiled_solver = "libsolver_go2_warm_N16_dt20.so"
 
 debug = False  # print info
+plot = False
 
 
 def mpc_loop(ocp, robot_instance, q0, N):
     x_init = np.concatenate((q0, np.zeros(robot.nv)))
+    tau_prev = np.zeros(robot.nj)
     solve_times = []
+    tau_diffs = []
 
     if compile_solver or load_compiled_solver:
         if load_compiled_solver:
             # Load solver
-            solver_function = casadi.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
+            solver_function = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
         else:
             # Initialize solver
             ocp.init_solver(solver=solver, compile_solver=compile_solver, warm_start=warm_start)
@@ -54,12 +58,14 @@ def mpc_loop(ocp, robot_instance, q0, N):
         for k in range(N):
             # Get parameters
             ocp.update_initial_state(x_init)
-            ocp.update_contact_schedule(shift_idx=k)
+            ocp.update_previous_torques(tau_prev)
+            ocp.update_gait_sequence(shift_idx=k)
             contact_schedule = ocp.opti.value(ocp.contact_schedule)
             bezier_schedule = ocp.opti.value(ocp.bezier_schedule)
+            n_contacts = ocp.opti.value(ocp.n_contacts)
 
-            params = [x_init, contact_schedule, bezier_schedule, robot.Q_diag, robot.R_diag,
-                      com_goal, step_height]
+            params = [x_init, tau_prev, contact_schedule, bezier_schedule, n_contacts,
+                      robot.Q_diag, robot.R_diag, robot.W_diag, com_goal, step_height]
 
             if ocp.arm_ee_id:
                 params += [arm_f_des, arm_vel_des]
@@ -67,7 +73,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
                 ocp.warm_start()
                 x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
                 params += [x_warm_start]
-            
+
             # Solve
             start_time = time.time()
             sol_x = solver_function(*params)
@@ -84,6 +90,11 @@ def mpc_loop(ocp, robot_instance, q0, N):
             x_diff = x_pred - x_init
             print("x_diff norm: ", np.linalg.norm(x_diff))
 
+            tau_0 = ocp._get_torque_sol(idx=0)
+            tau_diff = np.linalg.norm(tau_0 - tau_prev)
+            tau_diffs.append(tau_diff)
+            tau_prev = ocp._get_torque_sol(idx=1)  # update with next idx
+
             # lam_g_warm_start = sol_lam_g
             robot_instance.display(ocp.qs[-1])  # Display last q
 
@@ -93,7 +104,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
         for k in range(N):
             ocp.update_initial_state(x_init)
-            ocp.update_contact_schedule(shift_idx=k)
+            ocp.update_gait_sequence(shift_idx=k)
             ocp.warm_start()
             ocp.solve(retract_all=False)
             solve_times.append(ocp.solve_time)
@@ -103,6 +114,9 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
     print("Avg solve time (ms): ", np.average(solve_times) * 1000)
     print("Std solve time (ms): ", np.std(solve_times) * 1000)
+
+    print("Avg tau diff: ", np.average(tau_diffs))
+    print("Std tau diff: ", np.std(tau_diffs))
 
     return ocp
 
@@ -134,7 +148,7 @@ def main():
     ocp.set_com_goal(com_goal)
     ocp.set_step_height(step_height)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
-    ocp.set_weights(robot.Q_diag, robot.R_diag)
+    ocp.set_weights(robot.Q_diag, robot.R_diag, robot.W_diag)
     ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
 
     if debug:
@@ -172,6 +186,30 @@ def main():
 
             tau_total = np.concatenate((np.zeros(6), tau.flatten()))
             print("tau gap: ", tau_total - tau_rnea)
+
+    if plot:
+        # Plot q, v, tau
+        fig, axs = plt.subplots(3, 1, figsize=(10, 15))
+
+        axs[0].set_title("Joint positions (q)")
+        for j in range(ocp.nj):
+            # Ignore base (quaternion)
+            axs[0].plot([q[7 + j] for q in ocp.qs], label=f"joint {j}")
+        axs[0].legend()
+
+        axs[1].set_title("Joint velocities (v)")
+        for j in range(ocp.nj):
+            # Ignore base
+            axs[1].plot([v[6 + j] for v in ocp.vs], label=f"joint {j}")
+        axs[1].legend()
+
+        axs[2].set_title("Joint torques (tau)")
+        for j in range(ocp.nj):
+            axs[2].plot([tau[j] for tau in ocp.taus], label=f"joint {j}")
+        axs[2].legend()
+
+        plt.tight_layout()
+        plt.show()
 
     # Visualize
     for _ in range(50):

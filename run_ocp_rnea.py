@@ -9,17 +9,17 @@ from ocp_rnea import OCP_RNEA
 # robot = B2(reference_pose="standing")
 robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_nodes = 20
-ocp_nodes = 12
-dt = 0.025
+gait_nodes = 24
+ocp_nodes = 16
+dt = 0.02
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.1, 0, 0])
+arm_vel_des = np.array([0.3, 0, 0])
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([0.1, 0, 0, 0, 0, 0])
-step_height = 0.1
+com_goal = np.array([0.3, 0, 0, 0, 0, 0])
+step_height = 0.05
 
 # Solver
 solver = "fatrop"
@@ -51,24 +51,32 @@ def main():
     ocp.set_com_goal(com_goal)
     ocp.set_step_height(step_height)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
-    ocp.set_weights(robot.Q_diag, robot.R_diag)
+    ocp.set_weights(robot.Q_diag, robot.R_diag, robot.W_diag)
 
     x_init = np.concatenate((q0, np.zeros(model.nv)))
+    tau_prev = np.zeros(robot.nj)
     gait_idx = 0
 
     ocp.update_initial_state(x_init)
-    ocp.update_contact_schedule(shift_idx=gait_idx)
-    ocp.init_solver(solver=solver, compile_solver=compile_solver)
+    ocp.update_previous_torques(tau_prev)
+    ocp.update_gait_sequence(shift_idx=gait_idx)
+    ocp.init_solver(solver=solver, compile_solver=compile_solver, warm_start=False)
 
     if compile_solver:
         # Evaluate solver function that was compiled
         contact_schedule = ocp.opti.value(ocp.contact_schedule)
-        x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
+        bezier_schedule = ocp.opti.value(ocp.bezier_schedule)
+        n_contacts = ocp.opti.value(ocp.n_contacts)
+        # x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
         # lam_g_warm_start = ocp.opti.value(ocp.opti.lam_g, ocp.opti.initial())
 
+        params = [x_init, tau_prev, contact_schedule, bezier_schedule, n_contacts,
+                  robot.Q_diag, robot.R_diag, com_goal, step_height]
+        if ocp.arm_ee_id:
+            params += [arm_f_des, arm_vel_des]
+
         start_time = time.time()
-        sol_x = ocp.solver_function(x_init, contact_schedule, com_goal, arm_f_des, arm_vel_des,
-                                    robot.Q_diag, robot.R_diag, x_warm_start)
+        sol_x = ocp.solver_function(*params)
         end_time = time.time()
         ocp.solve_time = end_time - start_time
 
@@ -123,6 +131,7 @@ def main():
             q = ocp.qs[k]
             robot_instance.display(q)
             time.sleep(dt)
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()

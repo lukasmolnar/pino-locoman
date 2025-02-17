@@ -3,7 +3,7 @@ from time import sleep
 import numpy as np
 import pinocchio as pin
 import pinocchio.casadi as cpin
-import casadi
+import casadi as ca
 
 from load import load
 
@@ -35,50 +35,50 @@ x_nom = [0, 0, 0.55, 0, 0, 0, 1,
 
 
 def state_integrate(model):
-    x = casadi.SX.sym("x", model.nq)
-    dx = casadi.SX.sym("dx", model.nv)
+    x = ca.SX.sym("x", model.nq)
+    dx = ca.SX.sym("dx", model.nv)
     x_next = cpin.integrate(model, x, dx)
 
-    return casadi.Function("integrate", [x, dx], [x_next], ["x", "dx"], ["x_next"])
+    return ca.Function("integrate", [x, dx], [x_next], ["x", "dx"], ["x_next"])
 
 
 def state_difference(model):
-    x0 = casadi.SX.sym("x0", model.nq)
-    x1 = casadi.SX.sym("x1", model.nq)
+    x0 = ca.SX.sym("x0", model.nq)
+    x1 = ca.SX.sym("x1", model.nq)
     x_diff = cpin.difference(model, x0, x1)
 
-    return casadi.Function("difference", [x0, x1], [x_diff], ["x0", "x1"], ["x_diff"])
+    return ca.Function("difference", [x0, x1], [x_diff], ["x0", "x1"], ["x_diff"])
 
 
 def euler_integration(model, data, dt):
-    x = casadi.SX.sym("x", model.nq)
-    u = casadi.SX.sym("u", 19)
-    dx = casadi.vertcat(np.zeros(6), u * dt)
+    x = ca.SX.sym("x", model.nq)
+    u = ca.SX.sym("u", 19)
+    dx = ca.vertcat(np.zeros(6), u * dt)
 
-    # tau = casadi.SX.zeros(model.nv)
+    # tau = ca.SX.zeros(model.nv)
     # a = cpin.aba(model, data, x, u, tau)
     # dq = u * dt + a * dt**2
     # dx = dq
 
     x_next = state_integrate(model)(x, dx)
 
-    return casadi.Function("int_dyn", [x, u], [x_next], ["x", "u"], ["x_next"])
+    return ca.Function("int_dyn", [x, u], [x_next], ["x", "u"], ["x_next"])
 
 
 def cost_quadratic_state_error(model):
-    dx = casadi.SX.sym("dx", model.nv * 2)
+    dx = ca.SX.sym("dx", model.nv * 2)
 
     x_N = state_integrate(model)(x_nom, dx)
     e_goal = state_difference(model)(x_N, x_goal)
 
     cost = 0.5 * e_goal.T @ e_goal
 
-    return casadi.Function("quad_cost", [dx], [cost], ["dx"], ["cost"])
+    return ca.Function("quad_cost", [dx], [cost], ["dx"], ["cost"])
 
 
 class OptimalControlProblem:
     def __init__(self, model, terminal_soft_constraint=False):
-        self.opti = casadi.Opti()
+        self.opti = ca.Opti()
 
         self.model = model
         self.data = self.model.createData()

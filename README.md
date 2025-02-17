@@ -46,17 +46,19 @@ There are two options for what dynamics to use in the OCP:
 ### RNEA Dynamics
 
 - States: Generalized coordinates and velocities
-- Inputs: Ground reaction forces, joint torques
+- Inputs: Ground reaction forces, joint torques. For the Fatrop solver the generalized velocities `v_next` also need to be included, to preserve the diagnoal structure. 
 
 
 ## Solvers
 
 ### Fatrop
 
-Uses auto-structure detection. This currently only works on the centroidal dynamics model, because the RNEA dynamics constraints violate the diagonal structure assumed by Fatrop.
+Directly solves the constrained nonlinear optimization problem. Uses auto-structure detection, which significantly reduces the solve time compared to Ipopt. The solver is warm-started with the MPC solution from the previous step. 
 
-Code generation: The Fatrop solver can be exported to a C file and compiled to a shared library (see codegen folder).
+Code generation: The Fatrop solver can be exported to a C file and compiled to a shared library (see codegen folder). For hardware deployment the solver can be loaded with `casadi::external`.
 
 ### OSQP
 
-The Opti formulation is converted to a Sequential Quadruatic Program (SQP). Each SQP iteration is solved with OSQP, and the solution is updated using the Armijo line-search method. This works on both centroidal and RNEA dynamics models.
+The Opti formulation is converted to a Sequential Quadruatic Program (SQP). Each SQP iteration is solved with OSQP, and the solution is updated using the Armijo line-search method.
+
+Code generation: The SQP matrices and vectors can be compiled to a shared library (see codegen folder). For hardware deployment they can be loaded with `casadi::external`. The OSQP setup and solve needs to be formulated in C++ like it is done here.

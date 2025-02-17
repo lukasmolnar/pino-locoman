@@ -23,5 +23,5 @@ module load stack/2024-06 gcc/12.2.0 cmake/3.27.7
 ```
 2. Run batch job:
 ```bash
-sbatch --time=1:00:00 --mem-per-cpu=16G --wrap="make"
+sbatch --time=0:30:00 --mem-per-cpu=16G --wrap="make"
 ```

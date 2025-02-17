@@ -2,6 +2,7 @@ from os.path import dirname, abspath
 
 import numpy as np
 import pinocchio as pin
+import casadi as ca
 from pinocchio.robot_wrapper import RobotWrapper
 
 
@@ -64,23 +65,37 @@ class Robot:
             ))
 
         elif dynamics == "rnea":
-            Q_pos_diag = np.concatenate((
+            Q_base_pos_diag = np.concatenate((
                 [0] * 2,  # base x/y
-                [1000],  # base z
-                [1000] * 2,  # base rot x/y
+                [10000],  # base z
+                [10000] * 2,  # base rot x/y
                 [0],  # base rot z
-                [100] * self.nj,  # joint pos
             ))
+            Q_joint_pos_diag = np.tile([1000, 1000, 100], 4)  # hip, thigh, calf
+
+            if self.arm_ee_id:
+                Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 7))  # arm
+
+            assert(len(Q_joint_pos_diag) == self.nj)
+
             Q_vel_diag = np.concatenate((
-                [1000] * 3,  # base linear
-                [1000] * 3,  # base angular
-                [1] * self.nj,  # joint vel
+                [1000] * 2,  # base lin x/y
+                [10000],  # base lin z
+                [1000] * 3,  # base ang
+                [1] * self.nj,  # joint vel (all of them)
             ))
-            self.Q_diag = np.concatenate((Q_pos_diag, Q_vel_diag))
+
+            self.Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
             self.R_diag = np.concatenate((
-                [1e-4] * self.nv,  # velocities
-                [1e-4] * self.nj,  # joint torques
-                [1e-4] * self.nf,  # forces
+                [1e-3] * self.nv,  # velocities
+                [1e-3] * self.nf,  # forces
+                [1e-3] * self.nj,  # joint torques
+            ))
+
+            # Additional weights
+            self.W_diag = np.concatenate((
+                [1e-1] * self.nj,  # keep tau_0 close to tau_prev
+                [1e-2] * self.nj,  # keep tau_1 close to tau_prev
             ))
 
         else:
@@ -101,6 +116,12 @@ class B2(Robot):
         srdf_path = "b2_description/srdf/b2.srdf"
         super().__init__(urdf_path, srdf_path, reference_pose)
 
+        # Joint limits (tiled: hip, thigh, calf)
+        self.joint_pos_min = np.tile([-0.87, -0.94, -2.82], 4)
+        self.joint_pos_max = np.tile([0.87, 4.69, -0.43], 4)
+        self.joint_vel_max = np.tile([23.0, 23.0, 14.0], 4)
+        self.joint_torque_max = np.tile([200, 200, 320], 4)
+
 
 class Go2(Robot):
     def __init__(self, reference_pose="standing"):
@@ -108,12 +129,42 @@ class Go2(Robot):
         srdf_path = "go2_description/srdf/go2.srdf"
         super().__init__(urdf_path, srdf_path, reference_pose)
 
+        # Joint limits (tiled: hip, thigh, calf)
+        self.joint_pos_min = np.tile([-1.0472, -1.5708, -2.7227], 4)
+        self.joint_pos_max = np.tile([1.0472, 3.4907, -0.83776], 4)
+        self.joint_vel_max = np.tile([30.1, 30.1, 15.70], 4)
+        self.joint_torque_max = np.tile([23.7, 23.7, 45.43], 4)
+
 
 class B2G(Robot):
     def __init__(self, reference_pose="standing_with_arm_up", ignore_arm=False):
         urdf_path = "b2g_description/urdf/b2g.urdf"
         srdf_path = "b2g_description/srdf/b2g.srdf"
         super().__init__(urdf_path, srdf_path, reference_pose)
+
+        # Leg joint limits (tiled: hip, thigh, calf)
+        self.joint_pos_min = np.tile([-0.87, -0.94, -2.82], 4)
+        self.joint_pos_max = np.tile([0.87, 4.69, -0.43], 4)
+        self.joint_vel_max = np.tile([23.0, 23.0, 14.0], 4)
+        self.joint_torque_max = np.tile([200, 200, 320], 4)
+
+        # Arm joint limits
+        self.joint_pos_min = np.concatenate((
+            self.joint_pos_min,
+            [-2.62, 0.0, -2.88, -1.52, -1.34, -2.79, -1.57]
+        ))
+        self.joint_pos_max = np.concatenate((
+            self.joint_pos_max,
+            [2.62, 2.97, 0.0, 1.52, 1.34, 2.79, 0.0]
+        ))
+        self.joint_vel_max = np.concatenate((
+            self.joint_vel_max,
+            [3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
+        ))
+        self.joint_torque_max = np.concatenate((
+            self.joint_torque_max,
+            [30, 60, 30, 30, 30, 30, 30]
+        ))
 
         # Ignore gripper joint in OCP
         self.dx_opt_indices = self.dx_opt_indices[:-1]
@@ -189,20 +240,18 @@ class GaitSequence:
         shift_idx %= self.gait_nodes
         return np.roll(self.bezier_schedule, -shift_idx, axis=1)
 
-    def get_bezier_pos_z(self, p0_z, idx, h=0.1):
-        # NOTE: idx needs to be normalized to [0, 1]
-        T = self.N * self.dt
-        t = idx * T
-
-        p1_z = p0_z + h
-        p2_z = p0_z
-        return (1 - t / T)**2 * p0_z + 2 * (1 - t / T) * (t / T) * p1_z + (t / T)**2 * p2_z
-    
     def get_bezier_vel_z(self, p0_z, idx, h=0.1):
         # NOTE: idx needs to be normalized to [0, 1]
-        T = self.N * self.dt
-        t = idx * T
+        T = self.N * self.dt  # period in seconds
 
-        p1_z = p0_z + h
-        p2_z = p0_z
-        return 2 * (1 - t / T) * (p1_z - p0_z) / T + 2 * (t / T) * (p2_z - p1_z) / T
+        # Implementation from crl-loco
+        vel_z = ca.if_else(
+            idx < 0.5,
+            self.cubic_bezier_derivative(p0_z, h, 2 * idx),
+            self.cubic_bezier_derivative(h, p0_z, 2 * idx - 1)
+        ) * 2 / T
+
+        return vel_z
+
+    def cubic_bezier_derivative(self, p0, p1, idx):
+        return 6 * idx * (1 - idx) * (p1 - p0)
