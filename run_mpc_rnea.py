@@ -8,8 +8,8 @@ from helpers import *
 from ocp_rnea import OCP_RNEA
 
 # Problem parameters
-robot = Go2(reference_pose="standing")
-# robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
+# robot = B2(reference_pose="standing")
+robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_nodes = 24
 ocp_nodes = 16

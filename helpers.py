@@ -67,20 +67,21 @@ class Robot:
         elif dynamics == "rnea":
             Q_base_pos_diag = np.concatenate((
                 [0] * 2,  # base x/y
-                [1000],  # base z
+                [10000],  # base z
                 [10000] * 2,  # base rot x/y
                 [0],  # base rot z
             ))
-            Q_joint_pos_diag = np.tile([1000, 100, 100], 4)  # hip, thigh, calf
+            Q_joint_pos_diag = np.tile([1000, 1000, 100], 4)  # hip, thigh, calf
 
             if self.arm_ee_id:
-                Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
+                Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 7))  # arm
 
             assert(len(Q_joint_pos_diag) == self.nj)
 
             Q_vel_diag = np.concatenate((
-                [1000] * 3,  # base linear
-                [1000] * 3,  # base angular
+                [1000] * 2,  # base lin x/y
+                [10000],  # base lin z
+                [1000] * 3,  # base ang
                 [1] * self.nj,  # joint vel (all of them)
             ))
 
@@ -141,12 +142,29 @@ class B2G(Robot):
         srdf_path = "b2g_description/srdf/b2g.srdf"
         super().__init__(urdf_path, srdf_path, reference_pose)
 
-        # Joint limits (tiled: hip, thigh, calf)
-        # TODO: arm joints
+        # Leg joint limits (tiled: hip, thigh, calf)
         self.joint_pos_min = np.tile([-0.87, -0.94, -2.82], 4)
         self.joint_pos_max = np.tile([0.87, 4.69, -0.43], 4)
         self.joint_vel_max = np.tile([23.0, 23.0, 14.0], 4)
         self.joint_torque_max = np.tile([200, 200, 320], 4)
+
+        # Arm joint limits
+        self.joint_pos_min = np.concatenate((
+            self.joint_pos_min,
+            [-2.62, 0.0, -2.88, -1.52, -1.34, -2.79, -1.57]
+        ))
+        self.joint_pos_max = np.concatenate((
+            self.joint_pos_max,
+            [2.62, 2.97, 0.0, 1.52, 1.34, 2.79, 0.0]
+        ))
+        self.joint_vel_max = np.concatenate((
+            self.joint_vel_max,
+            [3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
+        ))
+        self.joint_torque_max = np.concatenate((
+            self.joint_torque_max,
+            [30, 60, 30, 30, 30, 30, 30]
+        ))
 
         # Ignore gripper joint in OCP
         self.dx_opt_indices = self.dx_opt_indices[:-1]

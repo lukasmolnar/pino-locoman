@@ -69,10 +69,10 @@ class OCP_RNEA:
         # Desired state and input
         v_des = ca.vertcat(self.com_goal, [0] * self.nj)
         x_des = ca.vertcat(robot.q0, v_des)
-        dx_des = self.dyn.state_difference()(self.x_init, x_des)
-        f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)
+        dx_des = self.dyn.state_difference()(self.x_init, x_des)  # stay close to nominal state
+        f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)  # gravity compensation
         if self.arm_ee_id:
-            f_des = ca.vertcat(f_des, self.arm_f_des)
+            f_des = ca.vertcat(f_des, [0] * 3)  # zero force at end-effector
         u_des = ca.vertcat(ca.MX.zeros(self.nv), f_des, ca.MX.zeros(self.nj))  # zero velocity + torque
 
         # OBJECTIVE

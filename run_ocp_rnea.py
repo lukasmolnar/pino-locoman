@@ -6,19 +6,19 @@ from helpers import *
 from ocp_rnea import OCP_RNEA
 
 # Problem parameters
-robot = Go2(reference_pose="standing")
-# robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
+# robot = B2(reference_pose="standing")
+robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_nodes = 20
-ocp_nodes = 12
-dt = 0.025
+gait_nodes = 24
+ocp_nodes = 16
+dt = 0.02
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.1, 0, 0])
+arm_vel_des = np.array([0.3, 0, 0])
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([0.1, 0, 0, 0, 0, 0])
+com_goal = np.array([0.3, 0, 0, 0, 0, 0])
 step_height = 0.05
 
 # Solver
