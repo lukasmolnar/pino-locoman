@@ -25,11 +25,7 @@ class OCP_Centroidal:
         self.dt = self.gait_sequence.dt
         self.ee_ids = robot.ee_ids
         self.arm_ee_id = robot.arm_ee_id
-    
-        Q = robot.Q
-        R = robot.R
-        n_feet = len(self.ee_ids)
-        n_contact_feet = self.gait_sequence.n_contacts
+        self.n_feet = len(self.ee_ids)
 
         # State and inputs to optimize
         self.dx_opt_indices = robot.dx_opt_indices
@@ -49,20 +45,28 @@ class OCP_Centroidal:
 
         # Parameters
         self.x_init = self.opti.parameter(robot.nx)  # initial state
-        self.contact_schedule = self.opti.parameter(n_feet, self.nodes)  # gait schedule: contacts / bezier indices
+        self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes) # in_contact: 0 or 1
+        self.swing_schedule = self.opti.parameter(self.n_feet, self.nodes) # swing_phase: from 0 to 1
+        self.n_contacts = self.opti.parameter(1)  # number of contact feet
         self.com_goal = self.opti.parameter(6)  # linear + angular momentum
+        self.swing_height = self.opti.parameter(1)  # max swing height
+        self.swing_vel_limits = self.opti.parameter(2)  # start and end swing velocities
         self.arm_f_des = self.opti.parameter(3)  # force at end-effector
         self.arm_vel_des = self.opti.parameter(3)  # velocity at end-effector
+
+        self.Q_diag = self.opti.parameter(self.ndx_opt)  # state weights
+        self.R_diag = self.opti.parameter(self.nu_opt)  # input weights
+        self.Q = ca.diag(self.Q_diag)
+        self.R = ca.diag(self.R_diag)
 
         # Desired state and input
         x_des = ca.vertcat(self.com_goal, robot.q0)
         dx_des = self.dyn.state_difference()(self.x_init, x_des)
         dx_des = dx_des[self.dx_opt_indices]
-        f_des = np.tile([0, 0, 9.81 * self.mass / n_contact_feet], n_feet)
-        if robot.arm_ee_id:
-            # TODO: Check if arm force = 0 is ok (it is constrained later)
-            f_des = np.concatenate((f_des, np.zeros(3)))
-        u_des = np.concatenate((f_des, np.zeros(robot.nj)))
+        f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)  # gravity compensation
+        if self.arm_ee_id:
+            f_des = ca.vertcat(f_des, [0] * 3)  # zero force at end-effector
+        u_des = ca.vertcat(f_des, [0] * robot.nj)  # zero joint velocities
 
         # OBJECTIVE
         obj = 0
@@ -73,21 +77,21 @@ class OCP_Centroidal:
             u = self.U_opt[i]
             err_dx = dx - dx_des
             err_u = u - u_des
-            obj += 0.5 * err_dx.T @ Q @ err_dx
-            obj += 0.5 * err_u.T @ R @ err_u
-        
+            obj += 0.5 * err_dx.T @ self.Q @ err_dx
+            obj += 0.5 * err_u.T @ self.R @ err_u
+
         # Final state
         dx = self.DX_opt[self.nodes]
         err_dx = dx - dx_des
-        obj += 0.5 * dx.T @ Q @ dx
+        obj += 0.5 * err_dx.T @ self.Q @ err_dx
 
         # CONSTRAINTS
         self.opti.subject_to(self.DX_opt[0] == [0] * self.ndx_opt)
 
         for i in range(self.nodes):
             # Gather all state and input info
-            dx_opt = self.DX_opt[i]
-            x = self.dyn.state_integrate()(self.x_init, dx_opt)
+            dx = self.DX_opt[i]
+            x = self.dyn.state_integrate()(self.x_init, dx)
             u = self.U_opt[i]
             h = x[:6]
             q = x[6:]
@@ -100,18 +104,15 @@ class OCP_Centroidal:
             dx_next = self.DX_opt[i+1]
             dx_dyn = self.dyn.centroidal_dynamics(self.arm_ee_id)(x, u, dq_b)
             dx_dyn = dx_dyn[self.dx_opt_indices]
-            self.opti.subject_to(dx_next == dx_opt + dx_dyn * self.dt)
-
-            # TODO: Check if constraint q_next = q + dq * dt is necessary
+            self.opti.subject_to(dx_next == dx + dx_dyn * self.dt)
 
             # Contact and swing constraints
             for idx, frame_id in enumerate(self.ee_ids):
                 f_e = forces[idx * 3 : (idx + 1) * 3]
 
                 # Determine contact and bezier index from schedule
-                schedule_idx = self.contact_schedule[idx, i]
-                in_contact = ca.if_else(schedule_idx == 0, 1, 0)
-                bezier_idx = schedule_idx - 1
+                in_contact = self.contact_schedule[idx, i]
+                swing_phase = self.swing_schedule[idx, i]
 
                 # Friction cone
                 f_normal = f_e[2]
@@ -129,24 +130,14 @@ class OCP_Centroidal:
 
                 # Track bezier velocity (only in z)
                 vel_z = vel_lin[2]
-                vel_z_des = self.gait_sequence.get_bezier_vel_z(0, bezier_idx, h=step_height)
+                vel_z_des = self.gait_sequence.get_spline_vel_z(
+                    swing_phase,
+                    h_max=self.swing_height,
+                    v_liftoff=self.swing_vel_limits[0],
+                    v_touchdown=self.swing_vel_limits[1]    
+                )
                 vel_diff = vel_z - vel_z_des
                 self.opti.subject_to((1 - in_contact) * vel_diff == 0)
-
-                # Humanoid
-                if n_feet == 2:
-                    # Flat feet
-                    vel_ang = vel[3:]
-                    self.opti.subject_to(vel_ang == [0] * 3)
-
-            # Humanoid
-            if n_feet == 2:
-                # Minimum distance between feet
-                min_dist = 0.095  # standing pose is 0.1
-                foot_0 = self.dyn.get_frame_position(self.ee_ids[0])(q)
-                foot_1 = self.dyn.get_frame_position(self.ee_ids[1])(q)
-                foot_diff = foot_1 - foot_0
-                self.opti.subject_to(foot_diff[0]**2 + foot_diff[1]**2 >= min_dist**2)
 
             # Arm task
             if self.arm_ee_id:
@@ -157,12 +148,22 @@ class OCP_Centroidal:
                 self.opti.subject_to(vel_diff == [0] * 3)
 
                 # Force at end-effector (after all feet)
-                f_e = forces[3*n_feet:]
+                f_e = forces[3*self.n_feet:]
                 self.opti.subject_to(f_e == self.arm_f_des)
 
-            # Warm start
+            # Joint limits
+            pos_min = robot.joint_pos_min
+            pos_max = robot.joint_pos_max
+            vel_min = -robot.joint_vel_max
+            vel_max = robot.joint_vel_max
+            q_j = q[7:]  # skip base quaternion
+            self.opti.subject_to(self.opti.bounded(pos_min, q_j, pos_max))
+            self.opti.subject_to(self.opti.bounded(vel_min, dq_j, vel_max))
+
+            # Warm start: Use n_contacts from gait sequence for u_des
+            self.opti.set_value(self.n_contacts, self.gait_sequence.n_contacts)
             self.opti.set_initial(self.DX_opt[i], np.zeros(self.ndx_opt))
-            self.opti.set_initial(self.U_opt[i], u_des)
+            self.opti.set_initial(self.U_opt[i], self.opti.value(u_des))
 
         # Warm start
         self.opti.set_initial(self.DX_opt[self.nodes], np.zeros(self.ndx_opt))
@@ -181,16 +182,28 @@ class OCP_Centroidal:
     def update_initial_state(self, x_init):
         self.opti.set_value(self.x_init, x_init)
 
-    def update_contact_schedule(self, shift_idx=0):
+    def update_gait_sequence(self, shift_idx=0):
         contact_schedule = self.gait_sequence.shift_contact_schedule(shift_idx)
+        swing_schedule = self.gait_sequence.shift_swing_schedule(shift_idx)
+        n_contacts = self.gait_sequence.n_contacts
         self.opti.set_value(self.contact_schedule, contact_schedule[:, :self.nodes])
+        self.opti.set_value(self.swing_schedule, swing_schedule[:, :self.nodes])
+        self.opti.set_value(self.n_contacts, n_contacts)
 
     def set_com_goal(self, com_goal):
         self.opti.set_value(self.com_goal, com_goal)
 
+    def set_swing_params(self, swing_height, swing_vel_limits):
+        self.opti.set_value(self.swing_height, swing_height)
+        self.opti.set_value(self.swing_vel_limits, swing_vel_limits)
+
     def set_arm_task(self, arm_f_des, arm_vel_des):
         self.opti.set_value(self.arm_f_des, arm_f_des)
         self.opti.set_value(self.arm_vel_des, arm_vel_des)
+
+    def set_weights(self, Q_diag, R_diag):
+        self.opti.set_value(self.Q_diag, Q_diag)
+        self.opti.set_value(self.R_diag, R_diag)
 
     def warm_start(self):
         # Shift previous solution
@@ -208,7 +221,7 @@ class OCP_Centroidal:
         if self.lam_g is not None:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
 
-    def init_solver(self, solver="fatrop", compile_solver=False):
+    def init_solver(self, solver="fatrop", compile_solver=False, warm_start=False):
         self.solver_type = solver
 
         if solver == "fatrop":
@@ -218,23 +231,46 @@ class OCP_Centroidal:
                 "debug": True,
             }
             opts["fatrop"] = {
-                "print_level": 0,
+                "print_level": 1,
+                "max_iter": 10,
                 "tol": 1e-3,
-                "mu_init": 1e-8,
+                "mu_init": 1e-4,
                 "warm_start_init_point": True,
                 "warm_start_mult_bound_push": 1e-7,
                 "bound_push": 1e-7,
+                # "constr_viol_tol": 1e-2,
             }
             self.opti.solver(solver, opts)
 
             # Code generation
             if compile_solver:
-                solver_function = self.opti.to_function(
+                solver_params = [
+                    self.x_init,
+                    self.contact_schedule,
+                    self.swing_schedule,
+                    self.n_contacts,
+                    self.Q_diag,
+                    self.R_diag,
+                    self.com_goal,
+                    self.swing_height,
+                    self.swing_vel_limits
+                ]
+                if self.arm_ee_id:
+                    solver_params += [
+                        self.arm_f_des,
+                        self.arm_vel_des
+                    ]
+                if warm_start:
+                    solver_params += [
+                        self.opti.x,  # initial guess
+                        # self.opti.lam_g,  # dual variables
+                    ]
+                self.solver_function = self.opti.to_function(
                     "compiled_solver",
-                    [self.x_init, self.contact_schedule, self.com_goal, self.arm_f_des, self.arm_vel_des],  # parameters
-                    [self.DX_opt[1], self.U_opt[0]]  # output
+                    solver_params,
+                    [self.opti.x] # , self.opti.lam_g]  # output
                 )
-                solver_function.generate("compiled_solver.c")
+                self.solver_function.generate("compiled_solver.c")
 
         elif solver == "osqp":
             import osqp
@@ -295,6 +331,7 @@ class OCP_Centroidal:
             self.lam_g = self.sol.value(self.opti.lam_g)
 
         elif self.solver_type == "osqp":
+            import osqp
             ocp_params = ca.vertcat(
                 self.opti.value(self.x_init),
                 ca.vec(self.opti.value(self.contact_schedule)),  # flattened
@@ -344,7 +381,6 @@ class OCP_Centroidal:
 
             self._retract_sqp_sol(current_x, retract_all)
 
-    # TODO: Combine both retract functions
     def _retract_opti_sol(self, retract_all=True):
         # Retract self.opti solution stored in self.sol
         self.DX_prev = [self.sol.value(dx) for dx in self.DX_opt]
@@ -360,8 +396,8 @@ class OCP_Centroidal:
             if not retract_all:
                 return
 
-    def _retract_sqp_sol(self, sol_x, retract_all=True):
-        # Retract the given SQP solution
+    def _retract_stacked_sol(self, sol_x, retract_all=True):
+        # Retract the given solution, which contains all stacked states and inputs
         self.DX_prev = []
         self.U_prev = []
         x_init = self.opti.value(self.x_init)

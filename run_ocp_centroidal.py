@@ -10,30 +10,33 @@ from ocp_centroidal import OCP_Centroidal
 # robot = B2(reference_pose="standing")
 robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_nodes = 14
-ocp_nodes = 8
-dt = 0.03
+gait_nodes = 24
+ocp_nodes = 16
+dt = 0.02
 
 # Only for B2G
-arm_f_des = np.array([0, 0, -100])
-arm_vel_des = np.array([0.1, 0, 0])
+arm_f_des = np.array([0, 0, 0])
+arm_vel_des = np.array([0.3, 0, 0])
 
 # Tracking goal: linear and angular momentum
-com_goal = np.array([0.1, 0, 0, 0, 0, 0])
+com_goal = np.array([0.3, 0, 0, 0, 0, 0])
+
+# Swing params
+swing_height = 0.1
+swing_vel_limits = [0.2, -0.4]
 
 # Solver
-solver = "osqp"
+solver = "fatrop"
 compile_solver = False
-load_compiled_solver = None
 
-debug = True  # print info
+debug = False  # print info
 
 
 def main():
     robot.set_gait_sequence(gait_type, gait_nodes, dt)
     if type(robot) == B2G and not robot.ignore_arm:
         robot.add_arm_task(arm_f_des, arm_vel_des)
-    robot.initialize_weights()
+    robot.initialize_weights(dynamics="centroidal")
 
     robot_instance = robot.robot
     model = robot.model
@@ -50,28 +53,38 @@ def main():
         nodes=ocp_nodes,
     )
     ocp.set_com_goal(com_goal)
+    ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
+    ocp.set_weights(robot.Q_diag, robot.R_diag)
 
     x_init = np.concatenate((np.zeros(6), q0))
     gait_idx = 0
 
-    if load_compiled_solver:
-        compiled_solver = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
-        contact_schedule = ocp.gait_sequence.shift_contact_schedule(gait_idx)[:,:ocp_nodes]
-        start_time = time.time()
-        DX_sol, U_sol = compiled_solver(x_init, contact_schedule, gait_idx)
-        end_time = time.time()
-        print("DX_sol: ", DX_sol)
-        print("U_sol: ", U_sol)
-        print("Solve time (ms): ", (end_time - start_time) * 1000)
-        return
+    ocp.update_initial_state(x_init)
+    ocp.update_gait_sequence(shift_idx=gait_idx)
+    ocp.init_solver(solver=solver, compile_solver=compile_solver, warm_start=False)
 
+    if compile_solver:
+        # Evaluate solver function that was compiled
+        contact_schedule = ocp.opti.value(ocp.contact_schedule)
+        swing_schedule = ocp.opti.value(ocp.swing_schedule)
+        n_contacts = ocp.opti.value(ocp.n_contacts)
+
+        params = [x_init, contact_schedule, swing_schedule, n_contacts, robot.Q_diag,
+                  robot.R_diag, com_goal, swing_height, swing_vel_limits]
+        if ocp.arm_ee_id:
+            params += [arm_f_des, arm_vel_des]
+
+        start_time = time.time()
+        sol_x = ocp.solver_function(*params)
+        end_time = time.time()
+        ocp.solve_time = end_time - start_time
+
+        ocp._retract_stacked_sol(sol_x, retract_all=True)
     else:
-        ocp.update_initial_state(x_init)
-        ocp.update_contact_schedule(shift_idx=gait_idx)
-        ocp.init_solver(solver=solver, compile_solver=compile_solver)
         ocp.solve(retract_all=True)
-        print("Solve time (ms):", ocp.solve_time * 1000)
+
+    print("Solve time (ms):", ocp.solve_time * 1000)
 
     if debug:
         for k in range(ocp_nodes):
@@ -127,7 +140,7 @@ def main():
         for q in ocp.qs:
             robot_instance.display(q)        
             time.sleep(dt)
-
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()
