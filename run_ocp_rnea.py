@@ -19,11 +19,14 @@ arm_vel_des = np.array([0.3, 0, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.3, 0, 0, 0, 0, 0])
-step_height = 0.05
+
+# Swing params
+swing_height = 0.1
+swing_vel_limits = [0.2, -0.4]
 
 # Solver
 solver = "fatrop"
-compile_solver = False
+compile_solver = True
 
 debug = False  # print info
 
@@ -49,7 +52,7 @@ def main():
         nodes=ocp_nodes,
     )
     ocp.set_com_goal(com_goal)
-    ocp.set_step_height(step_height)
+    ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag, robot.W_diag)
 
@@ -65,13 +68,11 @@ def main():
     if compile_solver:
         # Evaluate solver function that was compiled
         contact_schedule = ocp.opti.value(ocp.contact_schedule)
-        bezier_schedule = ocp.opti.value(ocp.bezier_schedule)
+        swing_schedule = ocp.opti.value(ocp.swing_schedule)
         n_contacts = ocp.opti.value(ocp.n_contacts)
-        # x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
-        # lam_g_warm_start = ocp.opti.value(ocp.opti.lam_g, ocp.opti.initial())
 
-        params = [x_init, tau_prev, contact_schedule, bezier_schedule, n_contacts,
-                  robot.Q_diag, robot.R_diag, com_goal, step_height]
+        params = [x_init, tau_prev, contact_schedule, swing_schedule, n_contacts, robot.Q_diag,
+                  robot.R_diag, robot.W_diag, com_goal, swing_height, swing_vel_limits]
         if ocp.arm_ee_id:
             params += [arm_f_des, arm_vel_des]
 

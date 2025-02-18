@@ -57,12 +57,13 @@ class Robot:
                 [10] * 2,  # base x/y
                 [500],  # base z
                 [500] * 3,  # base rot
-                [10] * self.nj,  # joint pos
+                [100] * self.nj,  # joint pos
             ))
             self.R_diag = np.concatenate((
                 [1e-3] * self.nf,  # forces
                 [1e-1] * self.nj,  # joint vel
             ))
+            self.Q_diag = self.Q_diag[self.dx_opt_indices]
 
         elif dynamics == "rnea":
             Q_base_pos_diag = np.concatenate((
@@ -100,14 +101,6 @@ class Robot:
 
         else:
             raise ValueError(f"Dynamics: {dynamics} not supported")
-
-        self.Q = np.diag(self.Q_diag)
-        self.R = np.diag(self.R_diag)
-
-        if dynamics == "centroidal":
-            # Only consider optimized indices
-            # TODO: Add this for RNEA
-            self.Q = self.Q[self.dx_opt_indices][:, self.dx_opt_indices]
 
 
 class B2(Robot):
@@ -183,47 +176,47 @@ class GaitSequence:
 
         # Separate in contact (0 or 1) from bezier index (from 0 to 1)
         self.contact_schedule = np.ones((4, gait_nodes))  # default: in contact
-        self.bezier_schedule = np.zeros((4, gait_nodes))  # default: index 0
+        self.swing_schedule = np.zeros((4, gait_nodes))  # default: phase = 0
 
         if gait_type == "trot":
             self.N = gait_nodes // 2
             self.n_contacts = 2
             for i in range(gait_nodes):
-                bez_idx = i % self.N / (self.N - 1)  # normalize to [0, 1]
+                phase = i % self.N / (self.N - 1)  # normalize to [0, 1]
                 if i < self.N:
                     # FR, RL in swing
                     self.contact_schedule[0, i] = 0
                     self.contact_schedule[3, i] = 0
-                    self.bezier_schedule[0, i] = bez_idx
-                    self.bezier_schedule[3, i] = bez_idx
+                    self.swing_schedule[0, i] = phase
+                    self.swing_schedule[3, i] = phase
                 else:
                     # FL, RR in swing
                     self.contact_schedule[1, i] = 0
                     self.contact_schedule[2, i] = 0
-                    self.bezier_schedule[1, i] = bez_idx
-                    self.bezier_schedule[2, i] = bez_idx
+                    self.swing_schedule[1, i] = phase
+                    self.swing_schedule[2, i] = phase
 
         elif gait_type == "walk":
             self.N = gait_nodes // 4
             self.n_contacts = 3
             for i in range(gait_nodes):
-                bez_idx = i % self.N / (self.N - 1)  # normalize to [0, 1]
+                phase = i % self.N / (self.N - 1)  # normalize to [0, 1]
                 if i < self.N:
                     # FL in swing
                     self.contact_schedule[1, i] = 0
-                    self.bezier_schedule[1, i] = bez_idx
+                    self.swing_schedule[1, i] = phase
                 elif i < 2 * self.N:
                     # RR in swing
                     self.contact_schedule[2, i] = 0
-                    self.bezier_schedule[2, i] = bez_idx
+                    self.swing_schedule[2, i] = phase
                 elif i < 3 * self.N:
                     # FR in swing
                     self.contact_schedule[0, i] = 0
-                    self.bezier_schedule[0, i] = bez_idx
+                    self.swing_schedule[0, i] = phase
                 else:
                     # RL in swing
                     self.contact_schedule[3, i] = 0
-                    self.bezier_schedule[3, i] = bez_idx
+                    self.swing_schedule[3, i] = phase
 
         elif gait_type == "stand":
             self.N = gait_nodes
@@ -236,22 +229,62 @@ class GaitSequence:
         shift_idx %= self.gait_nodes
         return np.roll(self.contact_schedule, -shift_idx, axis=1)
 
-    def shift_bezier_schedule(self, shift_idx):
+    def shift_swing_schedule(self, shift_idx):
         shift_idx %= self.gait_nodes
-        return np.roll(self.bezier_schedule, -shift_idx, axis=1)
+        return np.roll(self.swing_schedule, -shift_idx, axis=1)
 
-    def get_bezier_vel_z(self, p0_z, idx, h=0.1):
-        # NOTE: idx needs to be normalized to [0, 1]
-        T = self.N * self.dt  # period in seconds
+    def get_bezier_vel_z(self, phase, h_max=0.1):
+        T = self.N * self.dt  # swing duration
 
         # Implementation from crl-loco
         vel_z = ca.if_else(
-            idx < 0.5,
-            self.cubic_bezier_derivative(p0_z, h, 2 * idx),
-            self.cubic_bezier_derivative(h, p0_z, 2 * idx - 1)
+            phase < 0.5,
+            self.cubic_bezier_derivative(0, h_max, 2 * phase),
+            self.cubic_bezier_derivative(h_max, 0, 2 * phase - 1)
         ) * 2 / T
 
         return vel_z
 
-    def cubic_bezier_derivative(self, p0, p1, idx):
-        return 6 * idx * (1 - idx) * (p1 - p0)
+    def cubic_bezier_derivative(self, p0, p1, phase):
+        return 6 * phase * (1 - phase) * (p1 - p0)
+
+    def get_spline_vel_z(self, phase, h_max=0.1, v_liftoff=0.2, v_touchdown=-0.4):
+        T = self.N * self.dt  # swing duration
+        mid_time = T / 2
+        spline1 = CubicSpline(0, mid_time, 0, v_liftoff, h_max, 0)
+        spline2 = CubicSpline(mid_time, T, h_max, 0, 0, v_touchdown)
+
+        vel_z = ca.if_else(
+            phase < 0.5,
+            spline1.velocity(phase * T),
+            spline2.velocity(phase * T)
+        )
+
+        return vel_z
+
+
+class CubicSpline:
+    """
+    Implementation from OCS2
+    """
+    def __init__(self, t0, t1, pos0, vel0, pos1, vel1):
+        assert t1 > t0
+        self.t0 = t0
+        self.t1 = t1
+        self.dt = t1 - t0
+
+        dpos = pos1 - pos0
+        dvel = vel1 - vel0
+
+        self.c0 = pos0
+        self.c1 = vel0 * self.dt
+        self.c2 = -(3.0 * vel0 + dvel) * self.dt + 3.0 * dpos
+        self.c3 = (2.0 * vel0 + dvel) * self.dt - 2.0 * dpos
+    
+    def position(self, t):
+        tn = (t - self.t0) / self.dt
+        return self.c3 * tn**3 + self.c2 * tn**2 + self.c1 * tn + self.c0
+
+    def velocity(self, t):
+        tn = (t - self.t0) / self.dt
+        return (3.0 * self.c3 * tn**2 + 2.0 * self.c2 * tn + self.c1) / self.dt

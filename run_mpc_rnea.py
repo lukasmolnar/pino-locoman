@@ -8,7 +8,7 @@ from helpers import *
 from ocp_rnea import OCP_RNEA
 
 # Problem parameters
-# robot = B2(reference_pose="standing")
+# robot = Go2(reference_pose="standing")
 robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_nodes = 24
@@ -21,7 +21,10 @@ arm_vel_des = np.array([0.3, 0, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.3, 0, 0, 0, 0, 0])
-step_height = 0.08
+
+# Swing params
+swing_height = 0.1
+swing_vel_limits = [0.2, -0.4]
 
 # MPC
 mpc_loops = 100
@@ -31,10 +34,10 @@ solver = "fatrop"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_go2_warm_N16_dt20.so"
+# load_compiled_solver = "libsolver_go2_spline_N18_dt17.so"
 
 debug = False  # print info
-plot = False
+plot = True
 
 
 def mpc_loop(ocp, robot_instance, q0, N):
@@ -61,11 +64,11 @@ def mpc_loop(ocp, robot_instance, q0, N):
             ocp.update_previous_torques(tau_prev)
             ocp.update_gait_sequence(shift_idx=k)
             contact_schedule = ocp.opti.value(ocp.contact_schedule)
-            bezier_schedule = ocp.opti.value(ocp.bezier_schedule)
+            swing_schedule = ocp.opti.value(ocp.swing_schedule)
             n_contacts = ocp.opti.value(ocp.n_contacts)
 
-            params = [x_init, tau_prev, contact_schedule, bezier_schedule, n_contacts,
-                      robot.Q_diag, robot.R_diag, robot.W_diag, com_goal, step_height]
+            params = [x_init, tau_prev, contact_schedule, swing_schedule, n_contacts, robot.Q_diag,
+                      robot.R_diag, robot.W_diag, com_goal, swing_height, swing_vel_limits]
 
             if ocp.arm_ee_id:
                 params += [arm_f_des, arm_vel_des]
@@ -146,7 +149,7 @@ def main():
         nodes=ocp_nodes,
     )
     ocp.set_com_goal(com_goal)
-    ocp.set_step_height(step_height)
+    ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag, robot.W_diag)
     ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)

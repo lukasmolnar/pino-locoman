@@ -52,10 +52,11 @@ class OCP_RNEA:
         self.x_init = self.opti.parameter(self.nx)  # initial state
         self.tau_prev = self.opti.parameter(self.nj)  # previous joint torques
         self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes) # in_contact: 0 or 1
-        self.bezier_schedule = self.opti.parameter(self.n_feet, self.nodes) # bez_idx: normalized to [0, 1]
+        self.swing_schedule = self.opti.parameter(self.n_feet, self.nodes) # swing_phase: from 0 to 1
         self.n_contacts = self.opti.parameter(1)  # number of contact feet
         self.com_goal = self.opti.parameter(6)  # linear + angular momentum
-        self.step_height = self.opti.parameter(1)  # step height
+        self.swing_height = self.opti.parameter(1)  # max swing height
+        self.swing_vel_limits = self.opti.parameter(2)  # start and end swing velocities
         self.arm_f_des = self.opti.parameter(3)  # force at end-effector
         self.arm_vel_des = self.opti.parameter(3)  # velocity at end-effector
 
@@ -141,7 +142,7 @@ class OCP_RNEA:
 
                 # Get contact schedule info
                 in_contact = self.contact_schedule[idx, i]
-                bezier_idx = self.bezier_schedule[idx, i]
+                swing_phase = self.swing_schedule[idx, i]
 
                 # Friction cone
                 f_normal = f_e[2]
@@ -161,9 +162,14 @@ class OCP_RNEA:
                 vel_lin = vel[:3]
                 self.opti.subject_to(in_contact * vel_lin == [0] * 3)
 
-                # Track bezier velocity (only in z)
+                # Track swing velocity (only in z)
                 vel_z = vel_lin[2]
-                vel_z_des = self.gait_sequence.get_bezier_vel_z(0, bezier_idx, h=self.step_height)
+                vel_z_des = self.gait_sequence.get_spline_vel_z(
+                    swing_phase,
+                    h_max=self.swing_height,
+                    v_liftoff=self.swing_vel_limits[0],
+                    v_touchdown=self.swing_vel_limits[1]    
+                )
                 vel_diff = vel_z - vel_z_des
                 self.opti.subject_to((1 - in_contact) * vel_diff == 0)
 
@@ -218,17 +224,18 @@ class OCP_RNEA:
 
     def update_gait_sequence(self, shift_idx=0):
         contact_schedule = self.gait_sequence.shift_contact_schedule(shift_idx)
-        bezier_schedule = self.gait_sequence.shift_bezier_schedule(shift_idx)
+        swing_schedule = self.gait_sequence.shift_swing_schedule(shift_idx)
         n_contacts = self.gait_sequence.n_contacts
         self.opti.set_value(self.contact_schedule, contact_schedule[:, :self.nodes])
-        self.opti.set_value(self.bezier_schedule, bezier_schedule[:, :self.nodes])
+        self.opti.set_value(self.swing_schedule, swing_schedule[:, :self.nodes])
         self.opti.set_value(self.n_contacts, n_contacts)
 
     def set_com_goal(self, com_goal):
         self.opti.set_value(self.com_goal, com_goal)
 
-    def set_step_height(self, step_height):
-        self.opti.set_value(self.step_height, step_height)
+    def set_swing_params(self, swing_height, swing_vel_limits):
+        self.opti.set_value(self.swing_height, swing_height)
+        self.opti.set_value(self.swing_vel_limits, swing_vel_limits)
 
     def set_arm_task(self, arm_f_des, arm_vel_des):
         self.opti.set_value(self.arm_f_des, arm_f_des)
@@ -287,13 +294,14 @@ class OCP_RNEA:
                     self.x_init,
                     self.tau_prev,
                     self.contact_schedule,
-                    self.bezier_schedule,
+                    self.swing_schedule,
                     self.n_contacts,
                     self.Q_diag,
                     self.R_diag,
                     self.W_diag,
                     self.com_goal,
-                    self.step_height
+                    self.swing_height,
+                    self.swing_vel_limits
                 ]
                 if self.arm_ee_id:
                     solver_params += [
@@ -313,7 +321,6 @@ class OCP_RNEA:
                 self.solver_function.generate("compiled_solver.c")
 
         elif solver == "osqp":
-            import osqp
             # Get all info from self.opti
             x = self.opti.x
             p = self.opti.p
@@ -357,6 +364,7 @@ class OCP_RNEA:
             self.lam_g = self.sol.value(self.opti.lam_g)
 
         elif self.solver_type == "osqp":
+            import osqp
             ocp_params = ca.vertcat(
                 self.opti.value(self.x_init),
                 ca.vec(self.opti.value(self.contact_schedule)),  # flattened
