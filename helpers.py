@@ -96,7 +96,6 @@ class Robot:
             # Additional weights
             self.W_diag = np.concatenate((
                 [1e-1] * self.nj,  # keep tau_0 close to tau_prev
-                [1e-2] * self.nj,  # keep tau_1 close to tau_prev
             ))
 
         else:

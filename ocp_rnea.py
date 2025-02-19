@@ -62,7 +62,7 @@ class OCP_RNEA:
 
         self.Q_diag = self.opti.parameter(self.ndx_opt)  # state weights
         self.R_diag = self.opti.parameter(self.nu_opt)  # input weights (with torques)
-        self.W_diag = self.opti.parameter(2 * self.nj)  # additional weights for joint torques
+        self.W_diag = self.opti.parameter(self.nj)  # additional weights for joint torques
         self.Q = ca.diag(self.Q_diag)
         self.R = ca.diag(self.R_diag)
         self.W = ca.diag(self.W_diag)
@@ -87,12 +87,10 @@ class OCP_RNEA:
             obj += 0.5 * err_dx.T @ self.Q @ err_dx
             obj += 0.5 * err_u.T @ self.R @ err_u
 
-        # Keep torques close to previous solution
+        # Keep torque close to previous solution
         tau_0 = self.U_opt[0][self.nv + self.nf :]
-        tau_1 = self.U_opt[1][self.nv + self.nf :]
-        tau_vec = ca.vertcat(tau_0, tau_1)
-        tau_goal = ca.vertcat(self.tau_prev, self.tau_prev)
-        err_tau = tau_vec - tau_goal
+        tau_des = self.tau_prev
+        err_tau = tau_0 - tau_des
         obj += 0.5 * err_tau.T @ self.W @ err_tau
 
         # Final state
