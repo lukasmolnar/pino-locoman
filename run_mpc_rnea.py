@@ -8,12 +8,13 @@ from helpers import *
 from ocp_rnea import OCP_RNEA
 
 # Problem parameters
-# robot = Go2(reference_pose="standing")
-robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
+robot = Go2(reference_pose="standing")
+# robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_nodes = 24
-ocp_nodes = 16
-dt = 0.02
+gait_period = 0.5
+nodes = 14
+dt = 0.03
+dt_sim = 0.01
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
@@ -23,8 +24,8 @@ arm_vel_des = np.array([0.3, 0, 0])
 com_goal = np.array([0.3, 0, 0, 0, 0, 0])
 
 # Swing params
-swing_height = 0.1
-swing_vel_limits = [0.2, -0.4]
+swing_height = 0.07
+swing_vel_limits = [0.1, -0.2]
 
 # MPC
 mpc_loops = 100
@@ -52,7 +53,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
             solver_function = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
         else:
             # Initialize solver
-            ocp.init_solver(solver=solver, compile_solver=compile_solver, warm_start=warm_start)
+            ocp.init_solver(solver, compile_solver, warm_start)
             solver_function = ocp.solver_function
 
         # Warm start (dual variables)
@@ -60,14 +61,15 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
         for k in range(N):
             # Get parameters
+            t_current = k * dt_sim
             ocp.update_initial_state(x_init)
             ocp.update_previous_torques(tau_prev)
-            ocp.update_gait_sequence(shift_idx=k)
+            ocp.update_gait_sequence(t_current)
             contact_schedule = ocp.opti.value(ocp.contact_schedule)
             swing_schedule = ocp.opti.value(ocp.swing_schedule)
             n_contacts = ocp.opti.value(ocp.n_contacts)
 
-            params = [x_init, tau_prev, contact_schedule, swing_schedule, n_contacts, robot.Q_diag,
+            params = [x_init, tau_prev, dt, dt_sim, contact_schedule, swing_schedule, n_contacts, robot.Q_diag,
                       robot.R_diag, robot.W_diag, com_goal, swing_height, swing_vel_limits]
 
             if ocp.arm_ee_id:
@@ -89,7 +91,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
             # Retract solution and update x_init
             ocp._retract_stacked_sol(sol_x, retract_all=False)
             x_pred = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
-            x_init = ocp._simulate_step(x_init, ocp.U_prev[0], dt)  # TODO: adjust dt
+            x_init = ocp._simulate_step(x_init, ocp.U_prev[0])
             x_diff = x_pred - x_init
             print("x_diff norm: ", np.linalg.norm(x_diff))
 
@@ -103,16 +105,20 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
     else:
         # Initialize solver
-        ocp.init_solver(solver=solver, compile_solver=compile_solver)
+        ocp.init_solver(solver, compile_solver, warm_start)
 
         for k in range(N):
+            t_current = k * dt_sim
             ocp.update_initial_state(x_init)
-            ocp.update_gait_sequence(shift_idx=k)
-            ocp.warm_start()
+            ocp.update_previous_torques(tau_prev)
+            ocp.update_gait_sequence(t_current)
+            if warm_start:
+                ocp.warm_start()
+
             ocp.solve(retract_all=False)
             solve_times.append(ocp.solve_time)
 
-            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+            x_init = ocp._simulate_step(x_init, ocp.U_prev[0])
             robot_instance.display(ocp.qs[-1])  # Display last q
 
     print("Avg solve time (ms): ", np.average(solve_times) * 1000)
@@ -125,7 +131,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
 
 def main():
-    robot.set_gait_sequence(gait_type, gait_nodes, dt)
+    robot.set_gait_sequence(gait_type, gait_period)
     if type(robot) == B2G and not robot.ignore_arm:
         robot.add_arm_task(arm_f_des, arm_vel_des)
     robot.initialize_weights(dynamics="rnea")
@@ -144,10 +150,8 @@ def main():
     robot_instance.display(q0)
 
     # Setup OCP
-    ocp = OCP_RNEA(
-        robot=robot,
-        nodes=ocp_nodes,
-    )
+    ocp = OCP_RNEA(robot, nodes)
+    ocp.set_time_params(dt, dt_sim)
     ocp.set_com_goal(com_goal)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
@@ -168,7 +172,7 @@ def main():
                 v_next = ocp.vs[k + 1]
             else:
                 break
-            a = (v_next - v) / dt
+            a = (v_next - v) / dt_sim
 
             # RNEA
             pin.framesForwardKinematics(model, data, q)
@@ -219,7 +223,7 @@ def main():
         for k in range(len(ocp.qs)):
             q = ocp.qs[k]
             robot_instance.display(q)
-            time.sleep(dt)
+            time.sleep(dt_sim)
 
 if __name__ == "__main__":
     main()

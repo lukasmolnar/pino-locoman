@@ -39,8 +39,8 @@ class Robot:
 
         self.arm_ee_id = None
 
-    def set_gait_sequence(self, gait_type, gait_nodes, dt):
-        self.gait_sequence = GaitSequence(gait_type, gait_nodes, dt)
+    def set_gait_sequence(self, gait_type, gait_period):
+        self.gait_sequence = GaitSequence(gait_type, gait_period)
         self.ee_ids = [self.model.getFrameId(f) for f in self.gait_sequence.feet]
         self.nf = 12  # forces at feet
 
@@ -168,95 +168,106 @@ class B2G(Robot):
 
 
 class GaitSequence:
-    def __init__(self, gait_type="trot", gait_nodes=20, dt=0.02):
+    def __init__(self, gait_type="trot", gait_period=0.5):
         self.feet = ["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
-        self.gait_nodes = gait_nodes
-        self.dt = dt
+        self.gait_type = gait_type
+        self.gait_period = gait_period
 
-        # Separate in contact (0 or 1) from bezier index (from 0 to 1)
-        self.contact_schedule = np.ones((4, gait_nodes))  # default: in contact
-        self.swing_schedule = np.zeros((4, gait_nodes))  # default: phase = 0
-
-        if gait_type == "trot":
-            self.N = gait_nodes // 2
+        if self.gait_type == "trot":
             self.n_contacts = 2
-            for i in range(gait_nodes):
-                phase = i % self.N / (self.N - 1)  # normalize to [0, 1]
-                if i < self.N:
+            self.swing_T = 0.5 * self.gait_period
+
+        elif self.gait_type == "walk":
+            self.n_contacts = 3
+            self.swing_T = 0.25 * self.gait_period
+        
+        elif self.gait_type == "stand":
+            self.n_contacts = 4
+            self.swing_T = 0.0
+        
+        else:
+            raise ValueError(f"Gait: {self.gait_type} not supported")
+
+    def get_gait_schedule(self, t_current, dt_sim, dt, nodes):
+        """
+        Returns contact and swing schedules for the horizon
+        NOTE: The first node uses dt_sim, the rest use dt
+        """
+        contact_schedule = np.ones((4, nodes))  # in_contact: 0 or 1
+        swing_schedule = np.zeros((4, nodes))  # swing_phase: from 0 to 1
+
+        if self.gait_type == "trot":
+            t = t_current
+            for i in range(nodes):
+                if i == 1:
+                    t += dt_sim
+                elif i > 1:
+                    t += dt
+                gait_phase = t % self.gait_period / self.gait_period
+                swing_phase = t % self.swing_T / self.swing_T
+                if gait_phase < 0.5:
                     # FR, RL in swing
-                    self.contact_schedule[0, i] = 0
-                    self.contact_schedule[3, i] = 0
-                    self.swing_schedule[0, i] = phase
-                    self.swing_schedule[3, i] = phase
+                    contact_schedule[0, i] = 0
+                    contact_schedule[3, i] = 0
+                    swing_schedule[0, i] = swing_phase
+                    swing_schedule[3, i] = swing_phase
                 else:
                     # FL, RR in swing
-                    self.contact_schedule[1, i] = 0
-                    self.contact_schedule[2, i] = 0
-                    self.swing_schedule[1, i] = phase
-                    self.swing_schedule[2, i] = phase
+                    contact_schedule[1, i] = 0
+                    contact_schedule[2, i] = 0
+                    swing_schedule[1, i] = swing_phase
+                    swing_schedule[2, i] = swing_phase
 
-        elif gait_type == "walk":
-            self.N = gait_nodes // 4
-            self.n_contacts = 3
-            for i in range(gait_nodes):
-                phase = i % self.N / (self.N - 1)  # normalize to [0, 1]
-                if i < self.N:
+        elif self.gait_type == "walk":
+            t = t_current
+            for i in range(nodes):
+                if i == 1:
+                    t += dt_sim
+                elif i > 1:
+                    t += dt
+                gait_phase = t % self.gait_period / self.gait_period
+                swing_phase = t % self.swing_T / self.swing_T
+                if gait_phase < 0.25:
                     # FL in swing
-                    self.contact_schedule[1, i] = 0
-                    self.swing_schedule[1, i] = phase
-                elif i < 2 * self.N:
+                    contact_schedule[1, i] = 0
+                    swing_schedule[1, i] = swing_phase
+                elif gait_phase < 0.5:
                     # RR in swing
-                    self.contact_schedule[2, i] = 0
-                    self.swing_schedule[2, i] = phase
-                elif i < 3 * self.N:
+                    contact_schedule[2, i] = 0
+                    swing_schedule[2, i] = swing_phase
+                elif gait_phase < 0.75:
                     # FR in swing
-                    self.contact_schedule[0, i] = 0
-                    self.swing_schedule[0, i] = phase
+                    contact_schedule[0, i] = 0
+                    swing_schedule[0, i] = swing_phase
                 else:
                     # RL in swing
-                    self.contact_schedule[3, i] = 0
-                    self.swing_schedule[3, i] = phase
+                    contact_schedule[3, i] = 0
+                    swing_schedule[3, i] = swing_phase
 
-        elif gait_type == "stand":
-            self.N = gait_nodes
-            self.n_contacts = 4
+        return contact_schedule, swing_schedule
 
-        else:
-            raise ValueError(f"Gait: {gait_type} not supported")
-
-    def shift_contact_schedule(self, shift_idx):
-        shift_idx %= self.gait_nodes
-        return np.roll(self.contact_schedule, -shift_idx, axis=1)
-
-    def shift_swing_schedule(self, shift_idx):
-        shift_idx %= self.gait_nodes
-        return np.roll(self.swing_schedule, -shift_idx, axis=1)
-
-    def get_bezier_vel_z(self, phase, h_max=0.1):
-        T = self.N * self.dt  # swing duration
-
+    def get_bezier_vel_z(self, swing_phase, h_max=0.1):
         # Implementation from crl-loco
         vel_z = ca.if_else(
-            phase < 0.5,
-            self.cubic_bezier_derivative(0, h_max, 2 * phase),
-            self.cubic_bezier_derivative(h_max, 0, 2 * phase - 1)
-        ) * 2 / T
+            swing_phase < 0.5,
+            self.cubic_bezier_derivative(0, h_max, 2 * swing_phase),
+            self.cubic_bezier_derivative(h_max, 0, 2 * swing_phase - 1)
+        ) * 2 / self.swing_T
 
         return vel_z
 
     def cubic_bezier_derivative(self, p0, p1, phase):
         return 6 * phase * (1 - phase) * (p1 - p0)
 
-    def get_spline_vel_z(self, phase, h_max=0.1, v_liftoff=0.2, v_touchdown=-0.4):
-        T = self.N * self.dt  # swing duration
-        mid_time = T / 2
+    def get_spline_vel_z(self, swing_phase, h_max=0.1, v_liftoff=0.1, v_touchdown=-0.2):
+        mid_time = self.swing_T / 2
         spline1 = CubicSpline(0, mid_time, 0, v_liftoff, h_max, 0)
-        spline2 = CubicSpline(mid_time, T, h_max, 0, 0, v_touchdown)
+        spline2 = CubicSpline(mid_time, self.swing_T, h_max, 0, 0, v_touchdown)
 
         vel_z = ca.if_else(
-            phase < 0.5,
-            spline1.velocity(phase * T),
-            spline2.velocity(phase * T)
+            swing_phase < 0.5,
+            spline1.velocity(swing_phase * self.swing_T),
+            spline2.velocity(swing_phase * self.swing_T)
         )
 
         return vel_z
