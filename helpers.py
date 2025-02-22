@@ -88,7 +88,7 @@ class Robot:
 
             self.Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
             self.R_diag = np.concatenate((
-                [1e-3] * self.nv,  # velocities
+                [1e-3] * self.nv,  # accelerations
                 [1e-3] * self.nf,  # forces
                 [1e-3] * self.nj,  # joint torques
             ))
@@ -188,7 +188,7 @@ class GaitSequence:
         else:
             raise ValueError(f"Gait: {self.gait_type} not supported")
 
-    def get_gait_schedule(self, t_current, dt_sim, dt, nodes):
+    def get_gait_schedule(self, t_current, dts, nodes):
         """
         Returns contact and swing schedules for the horizon
         NOTE: The first node uses dt_sim, the rest use dt
@@ -199,10 +199,8 @@ class GaitSequence:
         if self.gait_type == "trot":
             t = t_current
             for i in range(nodes):
-                if i == 1:
-                    t += dt_sim
-                elif i > 1:
-                    t += dt
+                if i > 0:
+                    t += dts[i - 1]
                 gait_phase = t % self.gait_period / self.gait_period
                 swing_phase = t % self.swing_T / self.swing_T
                 if gait_phase < 0.5:
@@ -221,10 +219,8 @@ class GaitSequence:
         elif self.gait_type == "walk":
             t = t_current
             for i in range(nodes):
-                if i == 1:
-                    t += dt_sim
-                elif i > 1:
-                    t += dt
+                if i > 0:
+                    t += dts[i - 1]
                 gait_phase = t % self.gait_period / self.gait_period
                 swing_phase = t % self.swing_T / self.swing_T
                 if gait_phase < 0.25:

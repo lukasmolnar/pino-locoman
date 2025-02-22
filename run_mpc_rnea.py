@@ -12,9 +12,9 @@ robot = Go2(reference_pose="standing")
 # robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.5
-nodes = 14
-dt = 0.03
-dt_sim = 0.01
+nodes = 10
+dt_min = 0.01  # used for simulation
+dt_max = 0.05
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
@@ -35,7 +35,7 @@ solver = "fatrop"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_go2_spline_N18_dt17.so"
+# load_compiled_solver = "libsolver_go2_dt_N12.so"
 
 debug = False  # print info
 plot = True
@@ -61,7 +61,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
         for k in range(N):
             # Get parameters
-            t_current = k * dt_sim
+            t_current = k * dt_min
             ocp.update_initial_state(x_init)
             ocp.update_previous_torques(tau_prev)
             ocp.update_gait_sequence(t_current)
@@ -69,8 +69,8 @@ def mpc_loop(ocp, robot_instance, q0, N):
             swing_schedule = ocp.opti.value(ocp.swing_schedule)
             n_contacts = ocp.opti.value(ocp.n_contacts)
 
-            params = [x_init, tau_prev, dt, dt_sim, contact_schedule, swing_schedule, n_contacts, robot.Q_diag,
-                      robot.R_diag, robot.W_diag, com_goal, swing_height, swing_vel_limits]
+            params = [x_init, tau_prev, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts,
+                      robot.Q_diag, robot.R_diag, robot.W_diag, com_goal, swing_height, swing_vel_limits]
 
             if ocp.arm_ee_id:
                 params += [arm_f_des, arm_vel_des]
@@ -108,7 +108,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
         ocp.init_solver(solver, compile_solver, warm_start)
 
         for k in range(N):
-            t_current = k * dt_sim
+            t_current = k * dt_min
             ocp.update_initial_state(x_init)
             ocp.update_previous_torques(tau_prev)
             ocp.update_gait_sequence(t_current)
@@ -126,6 +126,9 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
     print("Avg tau diff: ", np.average(tau_diffs))
     print("Std tau diff: ", np.std(tau_diffs))
+
+    T = sum([ocp.opti.value(dt) for dt in ocp.dts])
+    print("Horizon length (s): ", T)
 
     return ocp
 
@@ -151,7 +154,7 @@ def main():
 
     # Setup OCP
     ocp = OCP_RNEA(robot, nodes)
-    ocp.set_time_params(dt, dt_sim)
+    ocp.set_time_params(dt_min, dt_max)
     ocp.set_com_goal(com_goal)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
@@ -162,17 +165,12 @@ def main():
         for k in range(len(ocp.qs)):
             q = ocp.qs[k]
             v = ocp.vs[k]
+            a = ocp.accs[k]
             tau = ocp.taus[k]
-            forces = ocp.fs[k]
+            forces = ocp.forces[k]
             print("q: ", q.T)
             print("v: ", v.T)
             print("tau: ", tau.T)
-
-            if k < len(ocp.vs) - 1:
-                v_next = ocp.vs[k + 1]
-            else:
-                break
-            a = (v_next - v) / dt_sim
 
             # RNEA
             pin.framesForwardKinematics(model, data, q)
@@ -197,22 +195,24 @@ def main():
     if plot:
         # Plot q, v, tau
         fig, axs = plt.subplots(3, 1, figsize=(10, 15))
+        labels = ["FL hip", "FL thigh", "FL calf", "FR hip", "FR thigh", "FR calf",
+                  "RL hip", "RL thigh", "RL calf", "RR hip", "RR thigh", "RR calf"]
 
         axs[0].set_title("Joint positions (q)")
         for j in range(ocp.nj):
             # Ignore base (quaternion)
-            axs[0].plot([q[7 + j] for q in ocp.qs], label=f"joint {j}")
+            axs[0].plot([q[7 + j] for q in ocp.qs], label=labels[j])
         axs[0].legend()
 
         axs[1].set_title("Joint velocities (v)")
         for j in range(ocp.nj):
             # Ignore base
-            axs[1].plot([v[6 + j] for v in ocp.vs], label=f"joint {j}")
+            axs[1].plot([v[6 + j] for v in ocp.vs], label=labels[j])
         axs[1].legend()
 
         axs[2].set_title("Joint torques (tau)")
         for j in range(ocp.nj):
-            axs[2].plot([tau[j] for tau in ocp.taus], label=f"joint {j}")
+            axs[2].plot([tau[j] for tau in ocp.taus], label=labels[j])
         axs[2].legend()
 
         plt.tight_layout()
@@ -223,7 +223,7 @@ def main():
         for k in range(len(ocp.qs)):
             q = ocp.qs[k]
             robot_instance.display(q)
-            time.sleep(dt_sim)
+            time.sleep(dt_min)
 
 if __name__ == "__main__":
     main()

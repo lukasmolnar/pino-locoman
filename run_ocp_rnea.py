@@ -11,8 +11,8 @@ robot = Go2(reference_pose="standing")
 gait_type = "trot"
 gait_period = 0.5
 nodes = 14
-dt = 0.03
-dt_sim = 0.01
+dt_min = 0.01  # used for simulation
+dt_max = 0.05
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
@@ -49,7 +49,7 @@ def main():
 
     # Setup OCP
     ocp = OCP_RNEA(robot, nodes)
-    ocp.set_time_params(dt, dt_sim)
+    ocp.set_time_params(dt_min, dt_max)
     ocp.set_com_goal(com_goal)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_arm_task(arm_f_des, arm_vel_des)
@@ -70,8 +70,8 @@ def main():
         swing_schedule = ocp.opti.value(ocp.swing_schedule)
         n_contacts = ocp.opti.value(ocp.n_contacts)
 
-        params = [x_init, tau_prev, dt, dt_sim, contact_schedule, swing_schedule, n_contacts, robot.Q_diag,
-                  robot.R_diag, robot.W_diag, com_goal, swing_height, swing_vel_limits]
+        params = [x_init, tau_prev, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, 
+                  robot.Q_diag, robot.R_diag, robot.W_diag, com_goal, swing_height, swing_vel_limits]
         if ocp.arm_ee_id:
             params += [arm_f_des, arm_vel_des]
 
@@ -90,21 +90,13 @@ def main():
         for k in range(nodes):
             q = ocp.qs[k]
             v = ocp.vs[k]
+            a = ocp.accs[k]
             tau = ocp.taus[k]
             forces = ocp.fs[k]
             print("k: ", k)
             print("q: ", q.T)
             print("v: ", v.T)
             print("tau: ", tau.T)
-
-            if k == nodes - 1:
-                break
-
-            v_next = ocp.vs[k + 1]
-            if k == 0:
-                a = (v_next - v) / dt_sim
-            else:
-                a = (v_next - v) / dt
 
             # RNEA
             pin.framesForwardKinematics(model, data, q)
@@ -126,6 +118,9 @@ def main():
             tau_total = np.concatenate((np.zeros(6), tau))
             print("tau gap: ", tau_total - tau_rnea)
 
+    T = sum([ocp.opti.value(dt) for dt in ocp.dts])
+    print("Horizon length (s): ", T)
+
     # Visualize
     robot_instance.initViewer()
     robot_instance.loadViewerModel("pinocchio")
@@ -133,10 +128,8 @@ def main():
         for k in range(nodes):
             q = ocp.qs[k]
             robot_instance.display(q)
-            if k == 0:
-                time.sleep(dt_sim)
-            else:
-                time.sleep(dt)
+            dt = ocp.opti.value(ocp.dts[k])
+            time.sleep(dt)
         time.sleep(1)
 
 if __name__ == "__main__":
