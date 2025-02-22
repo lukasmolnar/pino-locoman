@@ -88,7 +88,7 @@ class Robot:
 
             self.Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
             self.R_diag = np.concatenate((
-                [1e-3] * self.nv,  # accelerations
+                # [1e-3] * self.nv,  # accelerations
                 [1e-3] * self.nf,  # forces
                 [1e-3] * self.nj,  # joint torques
             ))

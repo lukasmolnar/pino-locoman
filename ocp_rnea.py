@@ -33,7 +33,7 @@ class OCP_RNEA:
         # State and inputs to optimize
         self.nx = self.nq + self.nv  # positions + velocities
         self.ndx_opt = self.nv * 2  # position deltas + velocities
-        self.nu_opt = self.nv + self.nf + self.nj  # accelerations + forces + torques
+        self.nu_opt = self.nf + self.nj  # forces + torques
 
         # Dynamics
         self.dyn = DynamicsRNEA(self.model, self.mass, self.ee_ids)
@@ -82,7 +82,7 @@ class OCP_RNEA:
         self.f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)  # gravity compensation
         if self.arm_ee_id:
             self.f_des = ca.vertcat(self.f_des, [0] * 3)  # zero force at end-effector
-        self.u_des = ca.vertcat(ca.MX.zeros(self.nv), self.f_des, ca.MX.zeros(self.nj))  # zero acc + torque
+        self.u_des = ca.vertcat(self.f_des, ca.MX.zeros(self.nj))  # zero acc + torque
 
         # OBJECTIVE
         obj = 0
@@ -96,7 +96,7 @@ class OCP_RNEA:
             obj += 0.5 * err_u.T @ self.R @ err_u
 
         # Keep torque close to previous solution
-        tau_0 = self.U_opt[0][self.nv + self.nf :]
+        tau_0 = self.U_opt[0][self.nf:]
         tau_des = self.tau_prev
         err_tau = tau_0 - tau_des
         obj += 0.5 * err_tau.T @ self.W @ err_tau
@@ -118,9 +118,12 @@ class OCP_RNEA:
             u = self.U_opt[i]
             q = x[:self.nq]
             v = x[self.nq:]
-            a = u[:self.nv]
-            forces = u[self.nv : self.nv + self.nf]
+            forces = u[:self.nf]
+            tau_j = u[self.nf:]
             dt = self.dts[i]
+
+            # ABA Dynamics
+            a = self.dyn.aba_dynamics(self.arm_ee_id)(q, v, tau_j, forces)
 
             # Dynamics constraint
             dx_next = self.DX_opt[i+1]
@@ -128,14 +131,6 @@ class OCP_RNEA:
             dv_next = dx_next[self.nv:]
             self.opti.subject_to(dq_next == dq + v * dt + 0.5 * a * dt**2)
             self.opti.subject_to(dv_next == dv + a * dt)
-
-            # RNEA constraint
-            tau_rnea = self.dyn.rnea_dynamics(self.arm_ee_id)(q, v, a, forces)
-            self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
-
-            # TODO: Check whether removing torques can make it faster
-            tau_j = u[self.nv + self.nf :]
-            self.opti.subject_to(tau_rnea[6:] == tau_j)  # joints
 
             # Torque limits
             tau_min = -robot.joint_torque_max
@@ -218,7 +213,6 @@ class OCP_RNEA:
         self.lam_g = None
         self.qs = []
         self.vs = []
-        self.accs = []
         self.forces = []
         self.taus = []
 
@@ -270,10 +264,9 @@ class OCP_RNEA:
                 # Previous solution for v, tau
                 # Tracking target for f (gravity compensation)
                 u_prev = self.U_prev[i]
-                v_prev = u_prev[:self.nv]
-                tau_prev = u_prev[self.nv + self.nf :]
+                tau_prev = u_prev[self.nf:]
                 f_des = self.opti.value(self.f_des)
-                u_warm = ca.vertcat(v_prev, f_des, tau_prev)
+                u_warm = ca.vertcat(f_des, tau_prev)
                 self.opti.set_initial(self.U_opt[i], u_warm)
 
         if self.lam_g is not None:
@@ -415,9 +408,8 @@ class OCP_RNEA:
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
             self.qs.append(np.array(x_sol[:self.nq]))
             self.vs.append(np.array(x_sol[self.nq:]))
-            self.accs.append(np.array(u_sol[:self.nv]))
-            self.forces.append(np.array(u_sol[self.nv : self.nv + self.nf]))
-            self.taus.append(np.array(u_sol[self.nv + self.nf :]))
+            self.forces.append(np.array(u_sol[:self.nf]))
+            self.taus.append(np.array(u_sol[self.nf:]))
 
             if not retract_all:
                 return
@@ -444,9 +436,8 @@ class OCP_RNEA:
             if i == 0 or retract_all:
                 self.qs.append(np.array(x_sol[:self.nq]))
                 self.vs.append(np.array(x_sol[self.nq:]))
-                self.accs.append(np.array(u_sol[:self.nv]))
-                self.forces.append(np.array(u_sol[self.nv : self.nv + self.nf]))
-                self.taus.append(np.array(u_sol[self.nv + self.nf :]))
+                self.forces.append(np.array(u_sol[:self.nf]))
+                self.taus.append(np.array(u_sol[self.nf:]))
 
         dx_last = sol_x[self.nodes*nx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)
@@ -458,14 +449,14 @@ class OCP_RNEA:
 
     def _get_torque_sol(self, idx):
         u_sol = self.U_prev[idx]
-        tau_sol = u_sol[self.nv + self.nf :]
+        tau_sol = u_sol[self.nf:]
         return tau_sol
 
     def _simulate_step(self, x_init, u):
         q = x_init[:self.nq]
         v = x_init[self.nq:]
-        forces = u[self.nv : self.nv + self.nf]
-        tau = u[self.nv + self.nf :]
+        forces = u[:self.nf]
+        tau = u[self.nf:]
         dt_sim = self.opti.value(self.dt_min)  # the first step size
 
         pin.framesForwardKinematics(self.model, self.data, q)

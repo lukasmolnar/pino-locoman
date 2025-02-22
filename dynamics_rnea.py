@@ -97,6 +97,39 @@ class DynamicsRNEA:
 
         return ca.Function("rnea_dyn", [q, v, a, forces], [tau_rnea], ["q", "v", "a", "forces"], ["tau_rnea"])
     
+    def aba_dynamics(self, arm_ee_id=None):
+        # States
+        q = ca.SX.sym("q", self.nq)  # positions
+        v = ca.SX.sym("v", self.nv)  # velocities
+
+        # Inputs
+        nf = len(self.ee_ids)
+        if arm_ee_id:
+            nf += 1
+        forces = ca.SX.sym("forces", 3 * nf)  # end-effector forces
+        tau_j = ca.SX.sym("tau", self.nj)  # torques
+        tau = ca.vertcat(ca.SX.zeros(6), tau_j)  # zero base torques
+
+        # ABA
+        cpin.framesForwardKinematics(self.model, self.data, q)
+        f_ext = [cpin.Force(ca.SX.zeros(6)) for _ in range(self.model.njoints)]
+        for idx, frame_id in enumerate(self.ee_ids):
+            # TODO: Check this. it is from OCS2.
+            joint_id = self.model.frames[frame_id].parentJoint
+            translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation
+            rotation_world_to_joint_frame = self.data.oMi[joint_id].rotation.T
+
+            f_world = forces[idx * 3 : (idx + 1) * 3]
+            f_lin = rotation_world_to_joint_frame @ f_world
+            f_ang = ca.cross(translation_joint_to_contact_frame, f_lin)
+            f = ca.vertcat(f_lin, f_ang)
+            f_ext[joint_id] = cpin.Force(f)
+
+        a = cpin.aba(self.model, self.data, q, v, tau, f_ext)
+
+        return ca.Function("aba_dyn", [q, v, tau_j, forces], [a], ["q", "v", "tau_j", "forces"], ["a"])
+
+    
     def get_frame_position(self, frame_id):
         q = ca.SX.sym("q", self.nq)
 
