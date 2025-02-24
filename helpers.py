@@ -29,7 +29,6 @@ class Robot:
         self.nv = self.model.nv
         self.nj = self.nq - 7  # without base position and quaternion
 
-        # Nominal state: COM + DOFs
         self.x_nom = np.concatenate((np.zeros(6), self.q0))
 
         # DX indicies that are optimized
@@ -53,11 +52,12 @@ class Robot:
     def initialize_weights(self, dynamics):
         if dynamics == "centroidal":
             self.Q_diag = np.concatenate((
-                [1000] * 6,  # com
-                [10] * 2,  # base x/y
+                [500] * 6,  # com
+                [0] * 2,  # base x/y
                 [500],  # base z
-                [500] * 3,  # base rot
-                [100] * self.nj,  # joint pos
+                [500] * 2,  # base rot x/y
+                [0],  # base rot z
+                [50] * self.nj,  # joint pos
             ))
             self.R_diag = np.concatenate((
                 [1e-3] * self.nf,  # forces

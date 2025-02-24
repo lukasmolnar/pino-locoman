@@ -6,12 +6,12 @@ from helpers import *
 from ocp_rnea import OCP_RNEA
 
 # Problem parameters
-robot = Go2(reference_pose="standing")
-# robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
+# robot = Go2(reference_pose="standing")
+robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.5
 nodes = 14
-dt_min = 0.01  # used for simulation
+dt_min = 0.02  # used for simulation
 dt_max = 0.05
 
 # Only for B2G

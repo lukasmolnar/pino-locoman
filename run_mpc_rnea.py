@@ -8,12 +8,12 @@ from helpers import *
 from ocp_rnea import OCP_RNEA
 
 # Problem parameters
-robot = Go2(reference_pose="standing")
-# robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
+# robot = Go2(reference_pose="standing")
+robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.5
 nodes = 10
-dt_min = 0.01  # used for simulation
+dt_min = 0.02  # used for simulation
 dt_max = 0.05
 
 # Only for B2G
@@ -199,19 +199,19 @@ def main():
                   "RL hip", "RL thigh", "RL calf", "RR hip", "RR thigh", "RR calf"]
 
         axs[0].set_title("Joint positions (q)")
-        for j in range(ocp.nj):
+        for j in range(12):
             # Ignore base (quaternion)
             axs[0].plot([q[7 + j] for q in ocp.qs], label=labels[j])
         axs[0].legend()
 
         axs[1].set_title("Joint velocities (v)")
-        for j in range(ocp.nj):
+        for j in range(12):
             # Ignore base
             axs[1].plot([v[6 + j] for v in ocp.vs], label=labels[j])
         axs[1].legend()
 
         axs[2].set_title("Joint torques (tau)")
-        for j in range(ocp.nj):
+        for j in range(12):
             axs[2].plot([tau[j] for tau in ocp.taus], label=labels[j])
         axs[2].legend()
 
@@ -220,8 +220,7 @@ def main():
 
     # Visualize
     for _ in range(50):
-        for k in range(len(ocp.qs)):
-            q = ocp.qs[k]
+        for q in ocp.qs:
             robot_instance.display(q)
             time.sleep(dt_min)
 

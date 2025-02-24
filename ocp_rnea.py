@@ -50,8 +50,8 @@ class OCP_RNEA:
         # Parameters
         self.x_init = self.opti.parameter(self.nx)  # initial state
         self.tau_prev = self.opti.parameter(self.nj)  # previous joint torques
-        self.dt_min = self.opti.parameter(1)  # time step for optimization
-        self.dt_max = self.opti.parameter(1)  # time step for simulation, used for first node
+        self.dt_min = self.opti.parameter(1)  # first time step size (used for sim)
+        self.dt_max = self.opti.parameter(1)  # last time step size
         self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes) # in_contact: 0 or 1
         self.swing_schedule = self.opti.parameter(self.n_feet, self.nodes) # swing_phase: from 0 to 1
         self.n_contacts = self.opti.parameter(1)  # number of contact feet
@@ -82,7 +82,7 @@ class OCP_RNEA:
         self.f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)  # gravity compensation
         if self.arm_ee_id:
             self.f_des = ca.vertcat(self.f_des, [0] * 3)  # zero force at end-effector
-        self.u_des = ca.vertcat(ca.MX.zeros(self.nv), self.f_des, ca.MX.zeros(self.nj))  # zero acc + torque
+        self.u_des = ca.vertcat([0] * self.nv, self.f_des, [0] * self.nj)  # zero acc + torque
 
         # OBJECTIVE
         obj = 0
@@ -402,7 +402,7 @@ class OCP_RNEA:
             end_time = time.time()
             self.solve_time = end_time - start_time
 
-            self._retract_sqp_sol(current_x, retract_all)
+            self._retract_stacked_sol(current_x, retract_all)
 
     def _retract_opti_sol(self, retract_all=True):
         # Retract self.opti solution stored in self.sol
