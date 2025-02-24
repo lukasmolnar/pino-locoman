@@ -8,7 +8,7 @@ from pinocchio.robot_wrapper import RobotWrapper
 
 
 class Robot:
-    def __init__(self, urdf_path, srdf_path, reference_pose, use_quaternion=True):
+    def __init__(self, urdf_path, srdf_path, dynamics, reference_pose, use_quaternion=True):
         urdf_dir = dirname(abspath(urdf_path))
         if use_quaternion:
             joint_model = pin.JointModelFreeFlyer()
@@ -29,12 +29,20 @@ class Robot:
         self.nv = self.model.nv
         self.nj = self.nq - 7  # without base position and quaternion
 
-        self.x_nom = np.concatenate((np.zeros(6), self.q0))
+        self.dynamics = dynamics
+        if self.dynamics == "centroidal":
+            self.nx = 6 + self.nq
+            self.ndx = self.nx - 1  # relative rotation instead of quaternion
+            self.dx_opt_indices = np.arange(self.ndx)  # all by default
+        
+        elif self.dynamics == "rnea":
+            self.nx = self.nq + self.nv
+            self.ndx = self.nx - 1  # exclude quaternion
+            self.dx_opt_indices = np.arange(self.ndx)  # all by default
+            # TODO: use dx_opt_indices in OCP!
 
-        # DX indicies that are optimized
-        self.nx = len(self.x_nom)
-        self.ndx = self.nx - 1  # exclude quaternion
-        self.dx_opt_indices = np.arange(self.ndx)  # all by default
+        else:
+            raise ValueError(f"Dynamics: {self.dynamics} not supported")
 
         self.arm_ee_id = None
 
@@ -49,8 +57,8 @@ class Robot:
         self.arm_f_des = f_des
         self.arm_vel_des = vel_des
 
-    def initialize_weights(self, dynamics):
-        if dynamics == "centroidal":
+    def initialize_weights(self):
+        if self.dynamics == "centroidal":
             self.Q_diag = np.concatenate((
                 [500] * 6,  # com
                 [0] * 2,  # base x/y
@@ -65,7 +73,7 @@ class Robot:
             ))
             self.Q_diag = self.Q_diag[self.dx_opt_indices]
 
-        elif dynamics == "rnea":
+        elif self.dynamics == "rnea":
             Q_base_pos_diag = np.concatenate((
                 [0] * 2,  # base x/y
                 [10000],  # base z
@@ -93,20 +101,19 @@ class Robot:
                 [1e-3] * self.nj,  # joint torques
             ))
 
+            # TODO: Use dx_opt_indices
+
             # Additional weights
             self.W_diag = np.concatenate((
                 [1e-1] * self.nj,  # keep tau_0 close to tau_prev
             ))
 
-        else:
-            raise ValueError(f"Dynamics: {dynamics} not supported")
-
 
 class B2(Robot):
-    def __init__(self, reference_pose="standing"):
+    def __init__(self, dynamics, reference_pose="standing"):
         urdf_path = "b2_description/urdf/b2.urdf"
         srdf_path = "b2_description/srdf/b2.srdf"
-        super().__init__(urdf_path, srdf_path, reference_pose)
+        super().__init__(urdf_path, srdf_path, dynamics, reference_pose)
 
         # Joint limits (tiled: hip, thigh, calf)
         self.joint_pos_min = np.tile([-0.87, -0.94, -2.82], 4)
@@ -116,10 +123,10 @@ class B2(Robot):
 
 
 class Go2(Robot):
-    def __init__(self, reference_pose="standing"):
+    def __init__(self, dynamics, reference_pose="standing"):
         urdf_path = "go2_description/urdf/go2.urdf"
         srdf_path = "go2_description/srdf/go2.srdf"
-        super().__init__(urdf_path, srdf_path, reference_pose)
+        super().__init__(urdf_path, srdf_path, dynamics, reference_pose)
 
         # Joint limits (tiled: hip, thigh, calf)
         self.joint_pos_min = np.tile([-1.0472, -1.5708, -2.7227], 4)
@@ -129,10 +136,10 @@ class Go2(Robot):
 
 
 class B2G(Robot):
-    def __init__(self, reference_pose="standing_with_arm_up", ignore_arm=False):
+    def __init__(self, dynamics, reference_pose="standing_with_arm_up", ignore_arm=False):
         urdf_path = "b2g_description/urdf/b2g.urdf"
         srdf_path = "b2g_description/srdf/b2g.srdf"
-        super().__init__(urdf_path, srdf_path, reference_pose)
+        super().__init__(urdf_path, srdf_path, dynamics, reference_pose)
 
         # Leg joint limits (tiled: hip, thigh, calf)
         self.joint_pos_min = np.tile([-0.87, -0.94, -2.82], 4)

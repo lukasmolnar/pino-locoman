@@ -8,8 +8,8 @@ from helpers import *
 from ocp_rnea import OCP_RNEA
 
 # Problem parameters
-# robot = Go2(reference_pose="standing")
-robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
+# robot = Go2(dynamics="rnea", reference_pose="standing")
+robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.5
 nodes = 10
@@ -137,7 +137,7 @@ def main():
     robot.set_gait_sequence(gait_type, gait_period)
     if type(robot) == B2G and not robot.ignore_arm:
         robot.add_arm_task(arm_f_des, arm_vel_des)
-    robot.initialize_weights(dynamics="rnea")
+    robot.initialize_weights()
 
     robot_instance = robot.robot
     model = robot.model

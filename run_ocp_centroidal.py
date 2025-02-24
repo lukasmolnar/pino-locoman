@@ -7,8 +7,8 @@ from helpers import *
 from ocp_centroidal import OCP_Centroidal
 
 # Problem parameters
-# robot = B2(reference_pose="standing")
-robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
+# robot = B2(dynamics="centroidal", reference_pose="standing")
+robot = B2G(dynamics="centroidal", reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.5
 nodes = 14
@@ -37,7 +37,7 @@ def main():
     robot.set_gait_sequence(gait_type, gait_period)
     if type(robot) == B2G and not robot.ignore_arm:
         robot.add_arm_task(arm_f_des, arm_vel_des)
-    robot.initialize_weights(dynamics="centroidal")
+    robot.initialize_weights()
 
     robot_instance = robot.robot
     model = robot.model
