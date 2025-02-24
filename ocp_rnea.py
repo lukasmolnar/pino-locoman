@@ -26,7 +26,6 @@ class OCP_RNEA:
 
         self.nodes = nodes
         self.mass = self.data.mass[0]
-        self.dt = self.gait_sequence.dt
         self.ee_ids = robot.ee_ids
         self.arm_ee_id = robot.arm_ee_id
         self.n_feet = len(self.ee_ids)
@@ -34,7 +33,7 @@ class OCP_RNEA:
         # State and inputs to optimize
         self.nx = self.nq + self.nv  # positions + velocities
         self.ndx_opt = self.nv * 2  # position deltas + velocities
-        self.nu_opt = self.nv + self.nf + self.nj  # velocities + forces + torques
+        self.nu_opt = self.nv + self.nf + self.nj  # accelerations + forces + torques
 
         # Dynamics
         self.dyn = DynamicsRNEA(self.model, self.mass, self.ee_ids)
@@ -51,6 +50,8 @@ class OCP_RNEA:
         # Parameters
         self.x_init = self.opti.parameter(self.nx)  # initial state
         self.tau_prev = self.opti.parameter(self.nj)  # previous joint torques
+        self.dt_min = self.opti.parameter(1)  # first time step size (used for sim)
+        self.dt_max = self.opti.parameter(1)  # last time step size
         self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes) # in_contact: 0 or 1
         self.swing_schedule = self.opti.parameter(self.n_feet, self.nodes) # swing_phase: from 0 to 1
         self.n_contacts = self.opti.parameter(1)  # number of contact feet
@@ -67,14 +68,21 @@ class OCP_RNEA:
         self.R = ca.diag(self.R_diag)
         self.W = ca.diag(self.W_diag)
 
-        # Desired state and input
+        # Increasing time step sizes
+        ratio = self.dt_max / self.dt_min
+        gamma = ratio ** (1 / (self.nodes - 1))  # growth factor
+        self.dts = [self.dt_min * gamma**i for i in range(self.nodes)]
+
+        # Desired state
         v_des = ca.vertcat(self.com_goal, [0] * self.nj)
         x_des = ca.vertcat(robot.q0, v_des)
-        dx_des = self.dyn.state_difference()(self.x_init, x_des)  # stay close to nominal state
-        f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)  # gravity compensation
+        self.dx_des = self.dyn.state_difference()(self.x_init, x_des)  # stay close to nominal state
+
+        # Desired input: Use this for warm starting
+        self.f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)  # gravity compensation
         if self.arm_ee_id:
-            f_des = ca.vertcat(f_des, [0] * 3)  # zero force at end-effector
-        u_des = ca.vertcat(ca.MX.zeros(self.nv), f_des, ca.MX.zeros(self.nj))  # zero velocity + torque
+            self.f_des = ca.vertcat(self.f_des, [0] * 3)  # zero force at end-effector
+        self.u_des = ca.vertcat([0] * self.nv, self.f_des, [0] * self.nj)  # zero acc + torque
 
         # OBJECTIVE
         obj = 0
@@ -82,8 +90,8 @@ class OCP_RNEA:
             # Track desired state and input
             dx = self.DX_opt[i]
             u = self.U_opt[i]
-            err_dx = dx - dx_des
-            err_u = u - u_des
+            err_dx = dx - self.dx_des
+            err_u = u - self.u_des
             obj += 0.5 * err_dx.T @ self.Q @ err_dx
             obj += 0.5 * err_u.T @ self.R @ err_u
 
@@ -95,73 +103,73 @@ class OCP_RNEA:
 
         # Final state
         dx = self.DX_opt[self.nodes]
-        err_dx = dx - dx_des
+        err_dx = dx - self.dx_des
         obj += 0.5 * err_dx.T @ self.Q @ err_dx
 
         # CONSTRAINTS
-        self.opti.subject_to(self.DX_opt[0] == [0] * 2 * self.nv)  # initial pos + vel
+        self.opti.subject_to(self.DX_opt[0] == [0] * self.ndx_opt)  # initial state
 
         for i in range(self.nodes):
             # Gather all state and input info
             dx = self.DX_opt[i]
             dq = dx[:self.nv]  # delta q, not v
+            dv = dx[self.nv:]  # delta v
             x = self.dyn.state_integrate()(self.x_init, dx)
             u = self.U_opt[i]
             q = x[:self.nq]
             v = x[self.nq:]
-            v_next_des = u[:self.nv]
+            a = u[:self.nv]
             forces = u[self.nv : self.nv + self.nf]
+            dt = self.dts[i]
 
             # Dynamics constraint
             dx_next = self.DX_opt[i+1]
             dq_next = dx_next[:self.nv]
-            x_next = self.dyn.state_integrate()(self.x_init, dx_next)
-            v_next = x_next[self.nq:]
-            self.opti.subject_to(dq_next == dq + 0.5 * (v + v_next_des) * self.dt)
-            self.opti.subject_to(v_next == v_next_des)
+            dv_next = dx_next[self.nv:]
+            self.opti.subject_to(dq_next == dq + v * dt + 0.5 * a * dt**2)
+            self.opti.subject_to(dv_next == dv + a * dt)
 
             # RNEA constraint
-            a = (v_next_des - v) / self.dt  # finite difference
             tau_rnea = self.dyn.rnea_dynamics(self.arm_ee_id)(q, v, a, forces)
             self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
-            if i < 2:
-                # Joint torques only for first two nodes
-                tau_j = u[self.nv + self.nf :]
-                self.opti.subject_to(tau_rnea[6:] == tau_j)  # joints
 
-                # Torque limits
-                tau_min = -robot.joint_torque_max
-                tau_max = robot.joint_torque_max
-                self.opti.subject_to(self.opti.bounded(tau_min, tau_j, tau_max))
+            # TODO: Check whether removing torques can make it faster
+            tau_j = u[self.nv + self.nf :]
+            self.opti.subject_to(tau_rnea[6:] == tau_j)  # joints
+
+            # Torque limits
+            tau_min = -robot.joint_torque_max
+            tau_max = robot.joint_torque_max
+            self.opti.subject_to(self.opti.bounded(tau_min, tau_j, tau_max))
 
             # Contact and swing constraints
             for idx, frame_id in enumerate(self.ee_ids):
                 f_e = forces[idx * 3 : (idx + 1) * 3]
 
-                # Get contact schedule info
+                # Get contact and swing info
                 in_contact = self.contact_schedule[idx, i]
                 swing_phase = self.swing_schedule[idx, i]
 
-                # Friction cone
+                # Contact: Friction cone
                 f_normal = f_e[2]
                 f_tangent_square = f_e[0]**2 + f_e[1]**2
                 self.opti.subject_to(in_contact * f_normal >= 0)
                 self.opti.subject_to(in_contact * mu**2 * f_normal**2 >= in_contact * f_tangent_square)
 
-                # Zero end-effector force
+                # Swing: Zero force
                 self.opti.subject_to((1 - in_contact) * f_e == [0] * 3)
 
                 if i == 0:
                     # No state constraints at first time step
                     continue
 
-                # Zero end-effector velocity (linear)
+                # Contact: Zero xy-velocity
                 vel = self.dyn.get_frame_velocity(frame_id)(q, v)
-                vel_lin = vel[:3]
-                self.opti.subject_to(in_contact * vel_lin == [0] * 3)
+                vel_xy = vel[:2]
+                self.opti.subject_to(in_contact * vel_xy == [0] * 2)
 
-                # Track swing velocity (only in z)
-                vel_z = vel_lin[2]
+                # Contact: Zero z-velocity / Swing: Spline z-velocity
+                vel_z = vel[2]
                 vel_z_des = self.gait_sequence.get_spline_vel_z(
                     swing_phase,
                     h_max=self.swing_height,
@@ -169,7 +177,7 @@ class OCP_RNEA:
                     v_touchdown=self.swing_vel_limits[1]    
                 )
                 vel_diff = vel_z - vel_z_des
-                self.opti.subject_to((1 - in_contact) * vel_diff == 0)
+                self.opti.subject_to(in_contact * vel_z + (1 - in_contact) * vel_diff == 0)
 
             # Arm task
             if self.arm_ee_id:
@@ -196,7 +204,7 @@ class OCP_RNEA:
             # Warm start: Use n_contacts from gait sequence for u_des
             self.opti.set_value(self.n_contacts, self.gait_sequence.n_contacts)
             self.opti.set_initial(self.DX_opt[i], np.zeros(self.ndx_opt))
-            self.opti.set_initial(self.U_opt[i], self.opti.value(u_des))
+            self.opti.set_initial(self.U_opt[i], self.opti.value(self.u_des))
 
         # Warm start
         self.opti.set_initial(self.DX_opt[self.nodes], np.zeros(self.ndx_opt))
@@ -210,30 +218,20 @@ class OCP_RNEA:
         self.lam_g = None
         self.qs = []
         self.vs = []
-        self.vdes = []
-        self.fs = []
+        self.accs = []
+        self.forces = []
         self.taus = []
 
-    def update_initial_state(self, x_init):
-        self.opti.set_value(self.x_init, x_init)
-
-    def update_previous_torques(self, tau_prev):
-        self.opti.set_value(self.tau_prev, tau_prev)
-
-    def update_gait_sequence(self, shift_idx=0):
-        contact_schedule = self.gait_sequence.shift_contact_schedule(shift_idx)
-        swing_schedule = self.gait_sequence.shift_swing_schedule(shift_idx)
-        n_contacts = self.gait_sequence.n_contacts
-        self.opti.set_value(self.contact_schedule, contact_schedule[:, :self.nodes])
-        self.opti.set_value(self.swing_schedule, swing_schedule[:, :self.nodes])
-        self.opti.set_value(self.n_contacts, n_contacts)
-
-    def set_com_goal(self, com_goal):
-        self.opti.set_value(self.com_goal, com_goal)
+    def set_time_params(self, dt_min, dt_max):
+        self.opti.set_value(self.dt_min, dt_min)
+        self.opti.set_value(self.dt_max, dt_max)
 
     def set_swing_params(self, swing_height, swing_vel_limits):
         self.opti.set_value(self.swing_height, swing_height)
         self.opti.set_value(self.swing_vel_limits, swing_vel_limits)
+
+    def set_com_goal(self, com_goal):
+        self.opti.set_value(self.com_goal, com_goal)
 
     def set_arm_task(self, arm_f_des, arm_vel_des):
         self.opti.set_value(self.arm_f_des, arm_f_des)
@@ -244,23 +242,39 @@ class OCP_RNEA:
         self.opti.set_value(self.R_diag, R_diag)
         self.opti.set_value(self.W_diag, W_diag)
 
+    def update_initial_state(self, x_init):
+        self.opti.set_value(self.x_init, x_init)
+
+    def update_previous_torques(self, tau_prev):
+        self.opti.set_value(self.tau_prev, tau_prev)
+
+    def update_gait_sequence(self, t_current):
+        dts = [self.opti.value(self.dts[i]) for i in range(self.nodes)]
+        contact_schedule, swing_schedule = self.gait_sequence.get_gait_schedule(t_current, dts, self.nodes)
+        n_contacts = self.gait_sequence.n_contacts
+        self.opti.set_value(self.contact_schedule, contact_schedule)
+        self.opti.set_value(self.swing_schedule, swing_schedule)
+        self.opti.set_value(self.n_contacts, n_contacts)
+
     def warm_start(self):
-        # Shift previous solution
-        # NOTE: No warm-start for last node, copying the 2nd last node performs worse.
+        # TODO: Look into interpolating
         if self.DX_prev is not None:
-            DX_init = self.DX_prev[1]
-            for i in range(self.nodes):
-                DX_diff = self.DX_prev[i+1] - DX_init
-                self.opti.set_initial(self.DX_opt[i], DX_diff)
-            # Last node
-            # DX_diff = self.DX_prev[-1] - DX_init
-            # self.opti.set_initial(self.DX_opt[self.nodes], DX_diff)
+            for i in range(self.nodes + 1):
+                # Previous solution for dx
+                dx_prev = self.DX_prev[i]
+                self.opti.set_initial(self.DX_opt[i], dx_prev)
+                continue
 
         if self.U_prev is not None:
-            for i in range(self.nodes - 1):
-                self.opti.set_initial(self.U_opt[i], self.U_prev[i+1])
-            # Last node
-            # self.opti.set_initial(self.U_opt[self.nodes-1], self.U_prev[-1])
+            for i in range(self.nodes):
+                # Previous solution for v, tau
+                # Tracking target for f (gravity compensation)
+                u_prev = self.U_prev[i]
+                v_prev = u_prev[:self.nv]
+                tau_prev = u_prev[self.nv + self.nf :]
+                f_des = self.opti.value(self.f_des)
+                u_warm = ca.vertcat(v_prev, f_des, tau_prev)
+                self.opti.set_initial(self.U_opt[i], u_warm)
 
         if self.lam_g is not None:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
@@ -282,35 +296,19 @@ class OCP_RNEA:
                 "warm_start_init_point": True,
                 "warm_start_mult_bound_push": 1e-7,
                 "bound_push": 1e-7,
-                # "constr_viol_tol": 1e-2,
             }
             self.opti.solver(solver, opts)
 
             # Code generation
             if compile_solver:
-                solver_params = [
-                    self.x_init,
-                    self.tau_prev,
-                    self.contact_schedule,
-                    self.swing_schedule,
-                    self.n_contacts,
-                    self.Q_diag,
-                    self.R_diag,
-                    self.W_diag,
-                    self.com_goal,
-                    self.swing_height,
-                    self.swing_vel_limits
-                ]
+                solver_params = [self.x_init, self.tau_prev, self.dt_min, self.dt_max, self.contact_schedule,
+                                 self.swing_schedule, self.n_contacts, self.Q_diag, self.R_diag, self.W_diag,
+                                 self.com_goal, self.swing_height, self.swing_vel_limits]
                 if self.arm_ee_id:
-                    solver_params += [
-                        self.arm_f_des,
-                        self.arm_vel_des
-                    ]
+                    solver_params += [self.arm_f_des, self.arm_vel_des]
                 if warm_start:
-                    solver_params += [
-                        self.opti.x,  # initial guess
-                        # self.opti.lam_g,  # dual variables
-                    ]
+                    solver_params += [self.opti.x]
+
                 self.solver_function = self.opti.to_function(
                     "compiled_solver",
                     solver_params,
@@ -404,7 +402,7 @@ class OCP_RNEA:
             end_time = time.time()
             self.solve_time = end_time - start_time
 
-            self._retract_sqp_sol(current_x, retract_all)
+            self._retract_stacked_sol(current_x, retract_all)
 
     def _retract_opti_sol(self, retract_all=True):
         # Retract self.opti solution stored in self.sol
@@ -417,8 +415,8 @@ class OCP_RNEA:
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
             self.qs.append(np.array(x_sol[:self.nq]))
             self.vs.append(np.array(x_sol[self.nq:]))
-            self.vdes.append(np.array(u_sol[:self.nv]))
-            self.fs.append(np.array(u_sol[self.nv : self.nv + self.nf]))
+            self.accs.append(np.array(u_sol[:self.nv]))
+            self.forces.append(np.array(u_sol[self.nv : self.nv + self.nf]))
             self.taus.append(np.array(u_sol[self.nv + self.nf :]))
 
             if not retract_all:
@@ -446,8 +444,8 @@ class OCP_RNEA:
             if i == 0 or retract_all:
                 self.qs.append(np.array(x_sol[:self.nq]))
                 self.vs.append(np.array(x_sol[self.nq:]))
-                self.vdes.append(np.array(u_sol[:self.nv]))
-                self.fs.append(np.array(u_sol[self.nv : self.nv + self.nf]))
+                self.accs.append(np.array(u_sol[:self.nv]))
+                self.forces.append(np.array(u_sol[self.nv : self.nv + self.nf]))
                 self.taus.append(np.array(u_sol[self.nv + self.nf :]))
 
         dx_last = sol_x[self.nodes*nx_opt:]
@@ -463,11 +461,12 @@ class OCP_RNEA:
         tau_sol = u_sol[self.nv + self.nf :]
         return tau_sol
 
-    def _simulate_step(self, x_init, u, dt):
+    def _simulate_step(self, x_init, u):
         q = x_init[:self.nq]
         v = x_init[self.nq:]
         forces = u[self.nv : self.nv + self.nf]
         tau = u[self.nv + self.nf :]
+        dt_sim = self.opti.value(self.dt_min)  # the first step size
 
         pin.framesForwardKinematics(self.model, self.data, q)
         f_ext = [pin.Force(np.zeros(6)) for _ in range(self.model.njoints)]
@@ -485,8 +484,8 @@ class OCP_RNEA:
         tau_all = np.concatenate((np.zeros(6), tau.flatten()))
         a = pin.aba(self.model, self.data, q, v, tau_all, f_ext)
 
-        dq = v * dt + 0.5 * a * dt**2
-        dv = a * dt
+        dq = v * dt_sim + 0.5 * a * dt_sim**2
+        dv = a * dt_sim
 
         q_next = pin.integrate(self.model, q, dq)
         v_next = v + dv
