@@ -8,7 +8,7 @@ from pinocchio.robot_wrapper import RobotWrapper
 
 
 class Robot:
-    def __init__(self, urdf_path, srdf_path, dynamics, reference_pose, use_quaternion=True):
+    def __init__(self, urdf_path, srdf_path, dynamics, reference_pose, use_quaternion=True, lock_joints=None):
         urdf_dir = dirname(abspath(urdf_path))
         if use_quaternion:
             joint_model = pin.JointModelFreeFlyer()
@@ -16,7 +16,11 @@ class Robot:
             joint_model = pin.JointModelComposite()
             joint_model.addJoint(pin.JointModelTranslation())
             joint_model.addJoint(pin.JointModelSphericalZYX())
+
         self.robot = RobotWrapper.BuildFromURDF(urdf_path, [urdf_dir], joint_model)
+        if lock_joints:
+            self.robot = self.robot.buildReducedRobot(lock_joints)
+
         self.model = self.robot.model
         self.data = self.robot.data
         if srdf_path and reference_pose:
@@ -30,18 +34,7 @@ class Robot:
         self.nj = self.nq - 7  # without base position and quaternion
 
         self.dynamics = dynamics
-        if self.dynamics == "centroidal":
-            self.nx = 6 + self.nq
-            self.ndx = self.nx - 1  # relative rotation instead of quaternion
-            self.dx_opt_indices = np.arange(self.ndx)  # all by default
-        
-        elif self.dynamics == "rnea":
-            self.nx = self.nq + self.nv
-            self.ndx = self.nx - 1  # exclude quaternion
-            self.dx_opt_indices = np.arange(self.ndx)  # all by default
-            # TODO: use dx_opt_indices in OCP!
-
-        else:
+        if self.dynamics not in ["centroidal", "rnea"]:
             raise ValueError(f"Dynamics: {self.dynamics} not supported")
 
         self.arm_ee_id = None
@@ -71,7 +64,6 @@ class Robot:
                 [1e-3] * self.nf,  # forces
                 [1e-1] * self.nj,  # joint vel
             ))
-            self.Q_diag = self.Q_diag[self.dx_opt_indices]
 
         elif self.dynamics == "rnea":
             Q_base_pos_diag = np.concatenate((
@@ -83,7 +75,7 @@ class Robot:
             Q_joint_pos_diag = np.tile([1000, 1000, 100], 4)  # hip, thigh, calf
 
             if self.arm_ee_id:
-                Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 7))  # arm
+                Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
 
             assert(len(Q_joint_pos_diag) == self.nj)
 
@@ -100,8 +92,6 @@ class Robot:
                 [1e-3] * self.nf,  # forces
                 [1e-3] * self.nj,  # joint torques
             ))
-
-            # TODO: Use dx_opt_indices
 
             # Additional weights
             self.W_diag = np.concatenate((
@@ -139,7 +129,13 @@ class B2G(Robot):
     def __init__(self, dynamics, reference_pose="standing_with_arm_up", ignore_arm=False):
         urdf_path = "b2g_description/urdf/b2g.urdf"
         srdf_path = "b2g_description/srdf/b2g.srdf"
-        super().__init__(urdf_path, srdf_path, dynamics, reference_pose)
+        self.ignore_arm = ignore_arm
+        if self.ignore_arm:
+            lock_joints = range(14, 21)  # all arm joints
+        else:
+            lock_joints = [20]  # just gripper joint
+
+        super().__init__(urdf_path, srdf_path, dynamics, reference_pose, lock_joints=lock_joints)
 
         # Leg joint limits (tiled: hip, thigh, calf)
         self.joint_pos_min = np.tile([-0.87, -0.94, -2.82], 4)
@@ -147,31 +143,24 @@ class B2G(Robot):
         self.joint_vel_max = np.tile([23.0, 23.0, 14.0], 4)
         self.joint_torque_max = np.tile([200, 200, 320], 4)
 
-        # Arm joint limits
-        self.joint_pos_min = np.concatenate((
-            self.joint_pos_min,
-            [-2.62, 0.0, -2.88, -1.52, -1.34, -2.79, -1.57]
-        ))
-        self.joint_pos_max = np.concatenate((
-            self.joint_pos_max,
-            [2.62, 2.97, 0.0, 1.52, 1.34, 2.79, 0.0]
-        ))
-        self.joint_vel_max = np.concatenate((
-            self.joint_vel_max,
-            [3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
-        ))
-        self.joint_torque_max = np.concatenate((
-            self.joint_torque_max,
-            [30, 60, 30, 30, 30, 30, 30]
-        ))
-
-        # Ignore gripper joint in OCP
-        self.dx_opt_indices = self.dx_opt_indices[:-1]
-
-        self.ignore_arm = ignore_arm    
-        if self.ignore_arm:
-            # Ignore all arm joints in OCP
-            self.dx_opt_indices = self.dx_opt_indices[:-6]
+        if not self.ignore_arm:
+            # Arm joint limits
+            self.joint_pos_min = np.concatenate((
+                self.joint_pos_min,
+                [-2.62, 0.0, -2.88, -1.52, -1.34, -2.79]
+            ))
+            self.joint_pos_max = np.concatenate((
+                self.joint_pos_max,
+                [2.62, 2.97, 0.0, 1.52, 1.34, 2.79]
+            ))
+            self.joint_vel_max = np.concatenate((
+                self.joint_vel_max,
+                [3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
+            ))
+            self.joint_torque_max = np.concatenate((
+                self.joint_torque_max,
+                [30, 60, 30, 30, 30, 30]
+            ))
 
 
 class GaitSequence:

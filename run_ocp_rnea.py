@@ -6,8 +6,8 @@ from helpers import *
 from ocp_rnea import OCP_RNEA
 
 # Problem parameters
-robot = Go2(dynamics="rnea", reference_pose="standing")
-# robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
+# robot = Go2(dynamics="rnea", reference_pose="standing")
+robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.5
 nodes = 12
@@ -17,13 +17,13 @@ dt_max = 0.05
 
 # Only for B2G
 arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.3, 0, 0])
+arm_vel_des = np.array([0.3, 0.3, 0])
 
 # Tracking goal: linear and angular momentum
 com_goal = np.array([0.3, 0, 0, 0, 0, 0])
 
 # Swing params
-swing_height = 0.07
+swing_height = 0.1
 swing_vel_limits = [0.1, -0.2]
 
 # Solver

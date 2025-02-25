@@ -44,7 +44,6 @@ class OCP_RNEA:
         self.dyn = DynamicsRNEA(self.model, self.mass, self.ee_ids)
 
         # Decision variables
-        # TODO: Check about removing torques for i >= 2 (but this makes problem overconstrained)
         self.DX_opt = []
         self.U_opt = []
         for i in range(self.nodes):
@@ -188,9 +187,19 @@ class OCP_RNEA:
                 vel_diff = vel_z - vel_z_des
                 self.opti.subject_to(in_contact * vel_z + (1 - in_contact) * vel_diff == 0)
 
+            # Warm start: Use n_contacts from gait sequence for u_des
+            self.opti.set_value(self.n_contacts, self.gait_sequence.n_contacts)
+            self.opti.set_initial(self.DX_opt[i], np.zeros(self.ndx_opt))
+            u_warm = self.opti.value(self.u_des)[:self.nu_opt[i]]
+            self.opti.set_initial(self.U_opt[i], u_warm)
+
+            if i == 0:
+                # No state constraints at first time step
+                continue
+
             # Arm task
             if self.arm_ee_id:
-                # Zero end-effector velocity (linear and angular)
+                # Zero end-effector velocity
                 vel = self.dyn.get_frame_velocity(self.arm_ee_id)(q, v)
                 vel_lin = vel[:3]
                 vel_diff = vel_lin - self.arm_vel_des
@@ -209,12 +218,6 @@ class OCP_RNEA:
             v_j = v[6:]  # skip base angular velocity
             self.opti.subject_to(self.opti.bounded(pos_min, q_j, pos_max))
             self.opti.subject_to(self.opti.bounded(vel_min, v_j, vel_max))
-
-            # Warm start: Use n_contacts from gait sequence for u_des
-            self.opti.set_value(self.n_contacts, self.gait_sequence.n_contacts)
-            self.opti.set_initial(self.DX_opt[i], np.zeros(self.ndx_opt))
-            u_warm = self.opti.value(self.u_des)[:self.nu_opt[i]]
-            self.opti.set_initial(self.U_opt[i], u_warm)
 
         # Warm start
         self.opti.set_initial(self.DX_opt[self.nodes], np.zeros(self.ndx_opt))

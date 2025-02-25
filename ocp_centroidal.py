@@ -30,12 +30,12 @@ class OCP_Centroidal:
         self.n_feet = len(self.ee_ids)
 
         # State and inputs to optimize
-        self.dx_opt_indices = robot.dx_opt_indices
-        self.ndx_opt = len(self.dx_opt_indices)
+        self.nx = 6 + self.nq  # centroidal momentum + joint positions
+        self.ndx_opt = 6 + self.nv  # centroidal momentum + position deltas
         self.nu_opt = self.nf + self.nj  # forces + joint velocities
 
         # Dynamics
-        self.dyn = DynamicsCentroidal(self.model, self.mass, self.ee_ids, self.dx_opt_indices)
+        self.dyn = DynamicsCentroidal(self.model, self.mass, self.ee_ids)
 
         # Decision variables
         self.DX_opt = []
@@ -46,7 +46,7 @@ class OCP_Centroidal:
         self.DX_opt.append(self.opti.variable(self.ndx_opt))
 
         # Parameters
-        self.x_init = self.opti.parameter(robot.nx)  # initial state
+        self.x_init = self.opti.parameter(self.nx)  # initial state
         self.dt_min = self.opti.parameter(1)  # first time step size (used for sim)
         self.dt_max = self.opti.parameter(1)  # last time step size
         self.contact_schedule = self.opti.parameter(self.n_feet, self.nodes) # in_contact: 0 or 1
@@ -70,8 +70,7 @@ class OCP_Centroidal:
 
         # Desired state
         x_des = ca.vertcat(self.com_goal, robot.q0)
-        dx_des = self.dyn.state_difference()(self.x_init, x_des)
-        self.dx_des = dx_des[self.dx_opt_indices]
+        self.dx_des = self.dyn.state_difference()(self.x_init, x_des)  # stay close to nominal state
 
         # Desired input: Use this for warm starting
         self.f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)  # gravity compensation
@@ -113,7 +112,6 @@ class OCP_Centroidal:
             # Dynamics constraint
             dx_next = self.DX_opt[i+1]
             dx_dyn = self.dyn.centroidal_dynamics(self.arm_ee_id)(x, u, dq_b)
-            dx_dyn = dx_dyn[self.dx_opt_indices]
             self.opti.subject_to(dx_next == dx + dx_dyn * self.dts[i])
 
             # Contact and swing constraints
