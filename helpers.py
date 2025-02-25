@@ -32,14 +32,11 @@ class Robot:
         self.dynamics = dynamics
         if self.dynamics == "centroidal":
             self.nx = 6 + self.nq
-            self.ndx = self.nx - 1  # relative rotation instead of quaternion
-            self.dx_opt_indices = np.arange(self.ndx)  # all by default
-        
+            self.opt_dofs = np.arange(self.nv)  # which DOFs to optimize
+
         elif self.dynamics == "rnea":
             self.nx = self.nq + self.nv
-            self.ndx = self.nx - 1  # exclude quaternion
-            self.dx_opt_indices = np.arange(self.ndx)  # all by default
-            # TODO: use dx_opt_indices in OCP!
+            self.opt_dofs = np.arange(self.nv)  # which DOFs to optimize
 
         else:
             raise ValueError(f"Dynamics: {self.dynamics} not supported")
@@ -51,7 +48,7 @@ class Robot:
         self.ee_ids = [self.model.getFrameId(f) for f in self.gait_sequence.feet]
         self.nf = 12  # forces at feet
 
-    def add_arm_task(self, f_des, vel_des=None):
+    def add_arm_task(self, f_des, vel_des):
         self.nf += 3
         self.arm_ee_id = self.model.getFrameId("gripperMover")
         self.arm_f_des = f_des
@@ -71,41 +68,43 @@ class Robot:
                 [1e-3] * self.nf,  # forces
                 [1e-1] * self.nj,  # joint vel
             ))
-            self.Q_diag = self.Q_diag[self.dx_opt_indices]
 
         elif self.dynamics == "rnea":
             Q_base_pos_diag = np.concatenate((
                 [0] * 2,  # base x/y
-                [10000],  # base z
+                [1000],  # base z
                 [10000] * 2,  # base rot x/y
                 [0],  # base rot z
             ))
-            Q_joint_pos_diag = np.tile([1000, 1000, 100], 4)  # hip, thigh, calf
-
-            if self.arm_ee_id:
-                Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 7))  # arm
+            Q_joint_pos_diag = np.tile([1000, 500, 500], 4)  # hip, thigh, calf
+            Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 7))  # arm
 
             assert(len(Q_joint_pos_diag) == self.nj)
 
+            Q_pos_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag))
             Q_vel_diag = np.concatenate((
                 [1000] * 2,  # base lin x/y
-                [10000],  # base lin z
-                [1000] * 3,  # base ang
+                [5000],  # base lin z
+                [1000] * 2,  # base ang x/y
+                [1000],  # base ang z
                 [1] * self.nj,  # joint vel (all of them)
             ))
 
-            self.Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
-            self.R_diag = np.concatenate((
-                [1e-3] * self.nv,  # accelerations
-                [1e-3] * self.nf,  # forces
-                [1e-3] * self.nj,  # joint torques
-            ))
+            Q_pos_diag = Q_pos_diag[self.opt_dofs]
+            Q_vel_diag = Q_vel_diag[self.opt_dofs]
+            self.Q_diag = np.concatenate((Q_pos_diag, Q_vel_diag))
 
-            # TODO: Use dx_opt_indices
+            n_opt_dofs = len(self.opt_dofs)
+            n_opt_taus = n_opt_dofs - 6
+            self.R_diag = np.concatenate((
+                [1e-3] * n_opt_dofs,  # accelerations
+                [1e-3] * self.nf,  # forces
+                [1e-3] * n_opt_taus,  # joint torques
+            ))
 
             # Additional weights
             self.W_diag = np.concatenate((
-                [1e-1] * self.nj,  # keep tau_0 close to tau_prev
+                [1e-1] * n_opt_taus,  # keep tau_0 close to tau_prev
             ))
 
 
@@ -166,12 +165,12 @@ class B2G(Robot):
         ))
 
         # Ignore gripper joint in OCP
-        self.dx_opt_indices = self.dx_opt_indices[:-1]
+        self.opt_dofs = self.opt_dofs[:-1]
 
-        self.ignore_arm = ignore_arm    
+        self.ignore_arm = ignore_arm
         if self.ignore_arm:
             # Ignore all arm joints in OCP
-            self.dx_opt_indices = self.dx_opt_indices[:-6]
+            self.opt_dofs = self.opt_dofs[:-6]
 
 
 class GaitSequence:

@@ -8,8 +8,8 @@ from helpers import *
 from ocp_rnea import OCP_RNEA
 
 # Problem parameters
-robot = Go2(dynamics="rnea", reference_pose="standing")
-# robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
+# robot = B2(dynamics="rnea", reference_pose="standing")
+robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.5
 nodes = 12
@@ -25,7 +25,7 @@ arm_vel_des = np.array([0.3, 0, 0])
 com_goal = np.array([0.3, 0, 0, 0, 0, 0])
 
 # Swing params
-swing_height = 0.07
+swing_height = 0.1
 swing_vel_limits = [0.1, -0.2]
 
 # MPC
@@ -36,7 +36,7 @@ solver = "fatrop"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_go2_dts_N12_tau2.so"
+# load_compiled_solver = "libsolver_b2_dts_N12_tau2.so"
 
 debug = False  # print info
 plot = True
@@ -44,7 +44,7 @@ plot = True
 
 def mpc_loop(ocp, robot_instance, q0, N):
     x_init = np.concatenate((q0, np.zeros(robot.nv)))
-    tau_prev = np.zeros(robot.nj)
+    tau_prev = np.zeros(ocp.n_opt_taus)
     solve_times = []
     tau_diffs = []
 

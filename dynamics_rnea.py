@@ -10,11 +10,13 @@ class DynamicsRNEA:
             model,
             mass,
             ee_ids,
+            opt_dofs,
         ):
         self.model = cpin.Model(model)
         self.data = self.model.createData()
         self.mass = mass
         self.ee_ids = ee_ids
+        self.opt_dofs = opt_dofs
 
         self.nq = self.model.nq
         self.nv = self.model.nv
@@ -22,19 +24,25 @@ class DynamicsRNEA:
 
     def state_integrate(self):
         x = ca.SX.sym("x", self.nq + self.nv)
-        dx = ca.SX.sym("dx", self.nv + self.nv)
+        dq_opt = ca.SX.sym("dq_opt", len(self.opt_dofs))
+        dv_opt = ca.SX.sym("dv_opt", len(self.opt_dofs))
+        dx_opt = ca.vertcat(dq_opt, dv_opt)
+
+        # The other DOFs remain zero
+        dq = ca.SX.zeros(self.nv)
+        dv = ca.SX.zeros(self.nv)
+        dq[self.opt_dofs] = dq_opt
+        dv[self.opt_dofs] = dv_opt
 
         q = x[:self.nq]
-        dq = dx[:self.nv]
         q_next = cpin.integrate(self.model, q, dq)
 
         v = x[self.nq:]
-        dv = dx[self.nv:]
         v_next = v + dv
 
         x_next = ca.vertcat(q_next, v_next)
 
-        return ca.Function("integrate", [x, dx], [x_next], ["x", "dx"], ["x_next"])
+        return ca.Function("integrate", [x, dx_opt], [x_next], ["x", "dx_opt"], ["x_next"])
     
     def state_difference(self):
         x0 = ca.SX.sym("x0", self.nq + self.nv)
@@ -55,13 +63,17 @@ class DynamicsRNEA:
         # States
         q = ca.SX.sym("q", self.nq)  # positions
         v = ca.SX.sym("v", self.nv)  # velocities
-        a = ca.SX.sym("a", self.nv)  # accelerations
 
         # Inputs
         nf = len(self.ee_ids)
         if arm_ee_id:
             nf += 1
         forces = ca.SX.sym("forces", 3 * nf)  # end-effector forces
+        a_opt = ca.SX.sym("a_opt", len(self.opt_dofs))  # accelerations
+
+        # The other DOFs remain zero
+        a = ca.SX.zeros(self.nv)
+        a[self.opt_dofs] = a_opt
 
         # RNEA
         cpin.framesForwardKinematics(self.model, self.data, q)
@@ -80,23 +92,8 @@ class DynamicsRNEA:
 
         tau_rnea = cpin.rnea(self.model, self.data, q, v, a, f_ext)
 
-        # Separate external forces
-        # tau_rnea = cpin.rnea(self.model, self.data, q, v, a)
-        # tau_ext = ca.SX.zeros(self.nv)
-        # for idx, frame_id in enumerate(self.ee_ids):
-        #     J = cpin.computeFrameJacobian(self.model, self.data, q, frame_id, pin.LOCAL_WORLD_ALIGNED)
-        #     J_lin = J[:3]
-        #     f_ext = forces[idx * 3 : (idx + 1) * 3]
-        #     tau_ext += J_lin.T @ f_ext
-        # if arm_ee_id:
-        #     J = cpin.computeFrameJacobian(self.model, self.data, q, arm_ee_id, pin.LOCAL_WORLD_ALIGNED)
-        #     J_lin = J[:3]
-        #     f_ext = forces[-3:]
-        #     tau_ext += J_lin.T @ f_ext
-        # tau_rnea -= tau_ext
+        return ca.Function("rnea_dyn", [q, v, a_opt, forces], [tau_rnea], ["q", "v", "a", "forces"], ["tau_rnea"])
 
-        return ca.Function("rnea_dyn", [q, v, a, forces], [tau_rnea], ["q", "v", "a", "forces"], ["tau_rnea"])
-    
     def get_frame_position(self, frame_id):
         q = ca.SX.sym("q", self.nq)
 
