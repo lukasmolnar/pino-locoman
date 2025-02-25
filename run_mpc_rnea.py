@@ -8,11 +8,11 @@ from helpers import *
 from ocp_rnea import OCP_RNEA
 
 # Problem parameters
-# robot = Go2(dynamics="rnea", reference_pose="standing")
-robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
+robot = Go2(dynamics="rnea", reference_pose="standing")
+# robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.5
-nodes = 10
+nodes = 14
 dt_min = 0.02  # used for simulation
 dt_max = 0.05
 
@@ -35,7 +35,7 @@ solver = "fatrop"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_go2_dt_N12.so"
+# load_compiled_solver = "libsolver_go2_N14_srb4.so"
 
 debug = False  # print info
 plot = True

@@ -6,8 +6,8 @@ from helpers import *
 from ocp_rnea import OCP_RNEA
 
 # Problem parameters
-# robot = Go2(dynamics="rnea", reference_pose="standing")
-robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
+robot = Go2(dynamics="rnea", reference_pose="standing")
+# robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.5
 nodes = 14

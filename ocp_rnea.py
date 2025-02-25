@@ -130,17 +130,28 @@ class OCP_RNEA:
             self.opti.subject_to(dv_next == dv + a * dt)
 
             # RNEA constraint
-            tau_rnea = self.dyn.rnea_dynamics(self.arm_ee_id)(q, v, a, forces)
-            self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
+            srb_idx = 4
+            if i < srb_idx:
+                tau_rnea = self.dyn.rnea_dynamics(self.arm_ee_id)(q, v, a, forces)
+                self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
 
-            # TODO: Check whether removing torques can make it faster
-            tau_j = u[self.nv + self.nf :]
-            self.opti.subject_to(tau_rnea[6:] == tau_j)  # joints
+                # TODO: Check whether removing torques can make it faster
+                tau_j = u[self.nv + self.nf :]
+                self.opti.subject_to(tau_rnea[6:] == tau_j)  # joints
 
-            # Torque limits
-            tau_min = -robot.joint_torque_max
-            tau_max = robot.joint_torque_max
-            self.opti.subject_to(self.opti.bounded(tau_min, tau_j, tau_max))
+                # Torque limits
+                tau_min = -robot.joint_torque_max
+                tau_max = robot.joint_torque_max
+                self.opti.subject_to(self.opti.bounded(tau_min, tau_j, tau_max))
+            else:
+                # Single rigid body
+                q_j_fixed = self.x_init[7 : 7 + self.nj]
+                q_b = q[:7]
+                q_j = q[7:]
+                v_b = v[:6]
+                a_b = a[:6]
+                tau_srb = self.dyn.srb_dynamics()(q_b, q_j, q_j_fixed, v_b, a_b, forces)
+                self.opti.subject_to(tau_srb[:6] == [0] * 6)  # base
 
             # Contact and swing constraints
             for idx, frame_id in enumerate(self.ee_ids):
@@ -190,6 +201,9 @@ class OCP_RNEA:
                 # Force at end-effector (after all feet)
                 f_e = forces[3*self.n_feet:]
                 self.opti.subject_to(f_e == self.arm_f_des)
+
+            # if i >= srb_idx:
+            #     continue
 
             # Joint limits
             pos_min = robot.joint_pos_min
