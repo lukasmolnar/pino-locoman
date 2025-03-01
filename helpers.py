@@ -104,8 +104,8 @@ class Robot:
 
 class B2(Robot):
     def __init__(self, dynamics, reference_pose="standing"):
-        urdf_path = "b2_description/urdf/b2.urdf"
-        srdf_path = "b2_description/srdf/b2.srdf"
+        urdf_path = "robots/b2_description/urdf/b2.urdf"
+        srdf_path = "robots/b2_description/srdf/b2.srdf"
         super().__init__(urdf_path, srdf_path, dynamics, reference_pose)
 
         # Joint limits (tiled: hip, thigh, calf)
@@ -117,8 +117,8 @@ class B2(Robot):
 
 class Go2(Robot):
     def __init__(self, dynamics, reference_pose="standing"):
-        urdf_path = "go2_description/urdf/go2.urdf"
-        srdf_path = "go2_description/srdf/go2.srdf"
+        urdf_path = "robots/go2_description/urdf/go2.urdf"
+        srdf_path = "robots/go2_description/srdf/go2.srdf"
         super().__init__(urdf_path, srdf_path, dynamics, reference_pose)
 
         # Joint limits (tiled: hip, thigh, calf)
@@ -130,8 +130,8 @@ class Go2(Robot):
 
 class B2G(Robot):
     def __init__(self, dynamics, reference_pose="standing_with_arm_up", ignore_arm=False):
-        urdf_path = "b2g_description/urdf/b2g.urdf"
-        srdf_path = "b2g_description/srdf/b2g.srdf"
+        urdf_path = "robots/b2g_description/urdf/b2g.urdf"
+        srdf_path = "robots/b2g_description/srdf/b2g.srdf"
         self.ignore_arm = ignore_arm
         if self.ignore_arm:
             lock_joints = range(14, 21)  # all arm joints
