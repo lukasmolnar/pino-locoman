@@ -35,7 +35,7 @@ class DynamicsRNEA:
         x_next = ca.vertcat(q_next, v_next)
 
         return ca.Function("integrate", [x, dx], [x_next], ["x", "dx"], ["x_next"])
-    
+
     def state_difference(self):
         x0 = ca.SX.sym("x0", self.nq + self.nv)
         x1 = ca.SX.sym("x1", self.nq + self.nv)
@@ -79,21 +79,6 @@ class DynamicsRNEA:
             f_ext[joint_id] = cpin.Force(f)
 
         tau_rnea = cpin.rnea(self.model, self.data, q, v, a, f_ext)
-
-        # Separate external forces
-        # tau_rnea = cpin.rnea(self.model, self.data, q, v, a)
-        # tau_ext = ca.SX.zeros(self.nv)
-        # for idx, frame_id in enumerate(self.ee_ids):
-        #     J = cpin.computeFrameJacobian(self.model, self.data, q, frame_id, pin.LOCAL_WORLD_ALIGNED)
-        #     J_lin = J[:3]
-        #     f_ext = forces[idx * 3 : (idx + 1) * 3]
-        #     tau_ext += J_lin.T @ f_ext
-        # if arm_ee_id:
-        #     J = cpin.computeFrameJacobian(self.model, self.data, q, arm_ee_id, pin.LOCAL_WORLD_ALIGNED)
-        #     J_lin = J[:3]
-        #     f_ext = forces[-3:]
-        #     tau_ext += J_lin.T @ f_ext
-        # tau_rnea -= tau_ext
 
         return ca.Function("rnea_dyn", [q, v, a, forces], [tau_rnea], ["q", "v", "a", "forces"], ["tau_rnea"])
     
