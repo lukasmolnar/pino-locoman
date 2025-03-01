@@ -384,6 +384,8 @@ class OCP_RNEA:
             ocp_params = ca.vertcat(
                 self.opti.value(self.x_init),
                 self.opti.value(self.tau_prev),
+                self.opti.value(self.dt_min),
+                self.opti.value(self.dt_max),
                 ca.vec(self.opti.value(self.contact_schedule)),  # flattened
                 ca.vec(self.opti.value(self.swing_schedule)),  # flattened
                 self.opti.value(self.n_contacts),

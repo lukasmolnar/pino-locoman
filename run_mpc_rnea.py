@@ -46,7 +46,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
     solve_times = []
     tau_diffs = []
 
-    if compile_solver or load_compiled_solver:
+    if solver == "fatrop" and compile_solver:
         if load_compiled_solver:
             # Load solver
             solver_function = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)

@@ -26,7 +26,7 @@ swing_vel_limits = [0.1, -0.2]
 
 # Solver
 solver = "fatrop"
-compile_solver = False
+compile_solver = True
 
 debug = False  # print info
 
@@ -60,7 +60,7 @@ def main():
     ocp.update_gait_sequence(t_current)
     ocp.init_solver(solver, compile_solver, warm_start=False)
 
-    if compile_solver:
+    if solver == "fatrop" and compile_solver:
         # Evaluate solver function that was compiled
         contact_schedule = ocp.opti.value(ocp.contact_schedule)
         swing_schedule = ocp.opti.value(ocp.swing_schedule)

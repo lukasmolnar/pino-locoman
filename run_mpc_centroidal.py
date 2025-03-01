@@ -30,7 +30,7 @@ mpc_loops = 50
 # Solver
 solver = "fatrop"
 warm_start = True
-compile_solver = False
+compile_solver = True
 load_compiled_solver = None
 # load_compiled_solver = "libsolver_trot_N8_dt03.so"
 
@@ -41,7 +41,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
     x_init = np.concatenate((np.zeros(6), q0))
     solve_times = []
 
-    if compile_solver or load_compiled_solver:
+    if solver == "fatrop" and compile_solver:
         if load_compiled_solver:
             # Load solver
             solver_function = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)

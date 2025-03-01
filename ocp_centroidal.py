@@ -88,13 +88,13 @@ class OCP_Centroidal:
             u = self.U_opt[i]
             err_dx = dx - self.dx_des
             err_u = u - self.u_des
-            obj += 0.5 * err_dx.T @ Q @ err_dx
-            obj += 0.5 * err_u.T @ R @ err_u
+            obj += err_dx.T @ Q @ err_dx
+            obj += err_u.T @ R @ err_u
 
         # Final state
         dx = self.DX_opt[self.nodes]
         err_dx = dx - self.dx_des
-        obj += 0.5 * err_dx.T @ Q @ err_dx
+        obj += err_dx.T @ Q @ err_dx
 
         # CONSTRAINTS
         self.opti.subject_to(self.DX_opt[0] == [0] * self.ndx_opt)  # initial state
@@ -345,6 +345,8 @@ class OCP_Centroidal:
             import osqp
             ocp_params = ca.vertcat(
                 self.opti.value(self.x_init),
+                self.opti.value(self.dt_min),
+                self.opti.value(self.dt_max),
                 ca.vec(self.opti.value(self.contact_schedule)),  # flattened
                 ca.vec(self.opti.value(self.swing_schedule)),  # flattened
                 self.opti.value(self.n_contacts),
