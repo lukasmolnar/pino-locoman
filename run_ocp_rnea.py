@@ -2,8 +2,8 @@ import time
 import numpy as np
 import pinocchio as pin
 
-from helpers import *
-from ocp_rnea import OCP_RNEA
+from utils.helpers import *
+from optimal_control_problem import OCP_RNEA
 
 # Problem parameters
 # robot = Go2(dynamics="rnea", reference_pose="standing")
@@ -48,6 +48,7 @@ def main():
 
     # Setup OCP
     ocp = OCP_RNEA(robot, nodes, tau_nodes)
+    ocp.setup_problem()
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)
@@ -60,26 +61,32 @@ def main():
     ocp.update_initial_state(x_init)
     ocp.update_previous_torques(tau_prev)
     ocp.update_gait_sequence(t_current)
-    ocp.init_solver(solver, compile_solver, warm_start=False)
+    ocp.init_solver(solver, warm_start=False)
 
     if solver == "fatrop" and compile_solver:
+        ocp.compile_solver()
+
         # Evaluate solver function that was compiled
         contact_schedule = ocp.opti.value(ocp.contact_schedule)
         swing_schedule = ocp.opti.value(ocp.swing_schedule)
         n_contacts = ocp.opti.value(ocp.n_contacts)
         swing_period = ocp.opti.value(ocp.swing_period)
 
-        params = [x_init, tau_prev, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
-                  swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, robot.W_diag, base_vel_des]
+        params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
+                  swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
+
         if ocp.arm_ee_id:
             params += [arm_f_des, arm_vel_des]
+
+        # RNEA params
+        params += [tau_prev, robot.W_diag]
 
         start_time = time.time()
         sol_x = ocp.solver_function(*params)
         end_time = time.time()
         ocp.solve_time = end_time - start_time
 
-        ocp._retract_stacked_sol(sol_x, retract_all=True)
+        ocp.retract_stacked_sol(sol_x, retract_all=True)
     else:
         ocp.solve(retract_all=True)
 

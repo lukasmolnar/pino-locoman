@@ -3,8 +3,8 @@ import numpy as np
 import pinocchio as pin
 import casadi as ca
 
-from helpers import *
-from ocp_centroidal import OCP_Centroidal
+from utils.helpers import *
+from optimal_control_problem import OCP_Centroidal
 
 # Problem parameters
 # robot = B2(dynamics="centroidal", reference_pose="standing")
@@ -46,8 +46,9 @@ def mpc_loop(ocp, robot_instance, q0, N):
             # Load solver
             solver_function = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
         else:
-            # Initialize solver
-            ocp.init_solver(solver=solver, compile_solver=compile_solver, warm_start=warm_start)
+            # Initialize solver and compile it
+            ocp.init_solver(solver, warm_start)
+            ocp.compile_solver()
             solver_function = ocp.solver_function
 
         for k in range(N):
@@ -80,7 +81,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
             print("Solve time (ms): ", sol_time * 1000)
 
             # Retract solution and update x_init
-            ocp._retract_stacked_sol(sol_x, retract_all=False)
+            ocp.retract_stacked_sol(sol_x, retract_all=False)
             x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])  # TODO: simulate step
 
             robot_instance.display(ocp.qs[-1])  # Display last q
@@ -129,6 +130,7 @@ def main():
 
     # Setup OCP
     ocp = OCP_Centroidal(robot, nodes)
+    ocp.setup_problem()
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)

@@ -1,4 +1,3 @@
-import numpy as np
 import pinocchio as pin
 import pinocchio.casadi as cpin
 import casadi as ca
@@ -81,7 +80,7 @@ class DynamicsRNEA:
         tau_rnea = cpin.rnea(self.model, self.data, q, v, a, f_ext)
 
         return ca.Function("rnea_dyn", [q, v, a, forces], [tau_rnea], ["q", "v", "a", "forces"], ["tau_rnea"])
-    
+
     def get_frame_position(self, frame_id):
         q = ca.SX.sym("q", self.nq)
 

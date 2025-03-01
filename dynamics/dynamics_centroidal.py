@@ -20,39 +20,22 @@ class DynamicsCentroidal:
         self.nv = self.model.nv
         self.nj = self.nq - 7  # without base position and quaternion
 
-        self.quat_nom = ca.SX([0, 0, 0, 1])
-        self.SO3 = cpin.liegroups.SO3()
-
-    def state_integrate(self, use_quat_nom=False):
+    def state_integrate(self):
         x = ca.SX.sym("x", 6 + self.nq)
         dx = ca.SX.sym("dx", 6 + self.nv)
 
         h = x[:6]
-        q = x[6:]
         dh = dx[:6]
-        dq = dx[6:]
-
-        if use_quat_nom:
-            qb_pos = q[:3]
-            dqb_pos = dq[:3]
-            qb_quat = q[3:7]
-            dqb_quat = dq[3:6]
-            qj = q[7:]
-            dqj = dq[6:]
-
-            qb_next_pos = qb_pos + dqb_pos
-            qb_next_quat = self.SO3.integrate(self.quat_nom, dqb_quat)
-            qj_next = qj + dqj
-            q_next = ca.vertcat(qb_next_pos, qb_next_quat, qj_next)
-
-        else:
-            q_next = cpin.integrate(self.model, q, dq)
-
         h_next = h + dh
+
+        q = x[6:]
+        dq = dx[6:]
+        q_next = cpin.integrate(self.model, q, dq)
+
         x_next = ca.vertcat(h_next, q_next)
 
         return ca.Function("integrate", [x, dx], [x_next], ["x", "dx"], ["x_next"])
-    
+
     def state_difference(self):
         x0 = ca.SX.sym("x0", 6 + self.nq)
         x1 = ca.SX.sym("x1", 6 + self.nq)
@@ -129,7 +112,7 @@ class DynamicsCentroidal:
         Ab = A[:, :6]
         Aj = A[:, 6:]
         # Ab_inv = ca.inv(Ab + 1e-6 * ca.SX.eye(6))
-        Ab_inv = self.compute_Ab_inv(Ab)
+        Ab_inv = self._compute_Ab_inv(Ab)
         dq_b = Ab_inv @ (h * self.mass - Aj @ dq_j)  # scale by mass
 
         return ca.Function("base_vel", [h, q, dq_j], [dq_b], ["h", "q", "dq_j"], ["dq_b"])
@@ -154,17 +137,7 @@ class DynamicsCentroidal:
 
         return ca.Function("frame_vel", [q, dq], [vel], ["q", "dq"], ["vel"])
 
-    def get_centroidal_momentum(self):
-        q = ca.SX.sym("q", self.nq)
-        dq = ca.SX.sym("dq", self.nv)
-
-        # TODO: Check Pinocchio terms
-        cpin.computeAllTerms(self.model, self.data, q, dq)
-        h = self.data.hg.vector
-
-        return ca.Function("centroidal_momentum", [q, dq], [h], ["q", "dq"], ["h"])
-
-    def compute_Ab_inv(self, Ab):
+    def _compute_Ab_inv(self, Ab):
         # NOTE: This is the OCS2 implementation
         mass = Ab[0, 0]
         Ab_22_inv = ca.inv(Ab[3:, 3:])

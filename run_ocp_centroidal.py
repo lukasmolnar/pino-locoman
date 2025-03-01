@@ -3,8 +3,8 @@ import numpy as np
 import pinocchio as pin
 import casadi as ca
 
-from helpers import *
-from ocp_centroidal import OCP_Centroidal
+from utils.helpers import *
+from optimal_control_problem import OCP_Centroidal
 
 # Problem parameters
 # robot = B2(dynamics="centroidal", reference_pose="standing")
@@ -48,6 +48,7 @@ def main():
 
     # Setup OCP
     ocp = OCP_Centroidal(robot, nodes)
+    ocp.setup_problem()
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)
@@ -58,9 +59,11 @@ def main():
 
     ocp.update_initial_state(x_init)
     ocp.update_gait_sequence(t_current)
-    ocp.init_solver(solver, compile_solver, warm_start=False)
+    ocp.init_solver(solver, warm_start=False)
 
     if solver == "fatrop" and compile_solver:
+        ocp.compile_solver()
+
         # Evaluate solver function that was compiled
         contact_schedule = ocp.opti.value(ocp.contact_schedule)
         swing_schedule = ocp.opti.value(ocp.swing_schedule)
@@ -77,7 +80,7 @@ def main():
         end_time = time.time()
         ocp.solve_time = end_time - start_time
 
-        ocp._retract_stacked_sol(sol_x, retract_all=True)
+        ocp.retract_stacked_sol(sol_x, retract_all=True)
     else:
         ocp.solve(retract_all=True)
 

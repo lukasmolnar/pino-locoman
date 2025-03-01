@@ -4,8 +4,8 @@ import pinocchio as pin
 import casadi as ca
 import matplotlib.pyplot as plt
 
-from helpers import *
-from ocp_rnea import OCP_RNEA
+from utils.helpers import *
+from optimal_control_problem import OCP_RNEA
 
 # Problem parameters
 # robot = B2(dynamics="rnea", reference_pose="standing")
@@ -51,8 +51,9 @@ def mpc_loop(ocp, robot_instance, q0, N):
             # Load solver
             solver_function = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
         else:
-            # Initialize solver
-            ocp.init_solver(solver, compile_solver, warm_start)
+            # Initialize solver and compile it
+            ocp.init_solver(solver, warm_start)
+            ocp.compile_solver()
             solver_function = ocp.solver_function
 
         # Warm start (dual variables)
@@ -69,8 +70,8 @@ def mpc_loop(ocp, robot_instance, q0, N):
             n_contacts = ocp.opti.value(ocp.n_contacts)
             swing_period = ocp.opti.value(ocp.swing_period)
 
-            params = [x_init, tau_prev, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
-                      swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, robot.W_diag, base_vel_des]
+            params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
+                      swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
 
             if ocp.arm_ee_id:
                 params += [arm_f_des, arm_vel_des]
@@ -78,6 +79,9 @@ def mpc_loop(ocp, robot_instance, q0, N):
                 ocp.warm_start()
                 x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
                 params += [x_warm_start]
+
+            # RNEA params
+            params += [tau_prev, robot.W_diag]
 
             # Solve
             start_time = time.time()
@@ -89,16 +93,16 @@ def mpc_loop(ocp, robot_instance, q0, N):
             print("Solve time (ms): ", sol_time * 1000)
 
             # Retract solution and update x_init
-            ocp._retract_stacked_sol(sol_x, retract_all=False)
+            ocp.retract_stacked_sol(sol_x, retract_all=False)
             x_pred = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
-            x_init = ocp._simulate_step(x_init, ocp.U_prev[0])
+            x_init = ocp.simulate_step(x_init, ocp.U_prev[0])
             x_diff = x_pred - x_init
             print("x_diff norm: ", np.linalg.norm(x_diff))
 
-            tau_0 = ocp._get_torque_sol(idx=0)
+            tau_0 = ocp.get_tau_sol(i=0)
             tau_diff = np.linalg.norm(tau_0 - tau_prev)
             tau_diffs.append(tau_diff)
-            tau_prev = ocp._get_torque_sol(idx=1)  # update with next idx
+            tau_prev = ocp.get_tau_sol(i=1)  # update with next idx
 
             # lam_g_warm_start = sol_lam_g
             robot_instance.display(ocp.qs[-1])  # Display last q
@@ -154,6 +158,7 @@ def main():
 
     # Setup OCP
     ocp = OCP_RNEA(robot, nodes, tau_nodes)
+    ocp.setup_problem()
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)

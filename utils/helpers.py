@@ -6,7 +6,6 @@ import casadi as ca
 from pinocchio.robot_wrapper import RobotWrapper
 
 
-
 class Robot:
     def __init__(self, urdf_path, srdf_path, dynamics, reference_pose, use_quaternion=True, lock_joints=None):
         urdf_dir = dirname(abspath(urdf_path))
