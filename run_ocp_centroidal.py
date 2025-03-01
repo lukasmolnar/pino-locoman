@@ -15,12 +15,10 @@ nodes = 14
 dt_min = 0.02  # used for simulation
 dt_max = 0.05
 
-# Only for B2G
+# Tracking target: Base velocity (and arm task for B2G)
+base_vel_des = np.array([0.3, 0, 0, 0, 0, 0])  # linear + angular
 arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.2, 0, 0])
-
-# Tracking goal: linear and angular momentum
-com_goal = np.array([0.2, 0, 0, 0, 0, 0])
+arm_vel_des = np.array([0.3, 0.3, 0])
 
 # Swing params
 swing_height = 0.07
@@ -28,7 +26,7 @@ swing_vel_limits = [0.1, -0.2]
 
 # Solver
 solver = "fatrop"
-compile_solver = False
+compile_solver = True
 
 debug = False  # print info
 
@@ -51,9 +49,8 @@ def main():
     # Setup OCP
     ocp = OCP_Centroidal(robot, nodes)
     ocp.set_time_params(dt_min, dt_max)
-    ocp.set_com_goal(com_goal)
     ocp.set_swing_params(swing_height, swing_vel_limits)
-    ocp.set_arm_task(arm_f_des, arm_vel_des)
+    ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag)
 
     x_init = np.concatenate((np.zeros(6), q0))
@@ -63,14 +60,15 @@ def main():
     ocp.update_gait_sequence(t_current)
     ocp.init_solver(solver, compile_solver, warm_start=False)
 
-    if compile_solver:
+    if solver == "fatrop" and compile_solver:
         # Evaluate solver function that was compiled
         contact_schedule = ocp.opti.value(ocp.contact_schedule)
         swing_schedule = ocp.opti.value(ocp.swing_schedule)
         n_contacts = ocp.opti.value(ocp.n_contacts)
+        swing_period = ocp.opti.value(ocp.swing_period)
 
-        params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts,
-                  robot.Q_diag, robot.R_diag, com_goal, swing_height, swing_vel_limits]
+        params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
+                  swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
         if ocp.arm_ee_id:
             params += [arm_f_des, arm_vel_des]
 

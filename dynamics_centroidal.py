@@ -10,13 +10,11 @@ class DynamicsCentroidal:
             model,
             mass,
             ee_ids,
-            dx_opt_indices,
         ):
         self.model = cpin.Model(model)
         self.data = self.model.createData()
         self.mass = mass
         self.ee_ids = ee_ids
-        self.dx_opt_indices = dx_opt_indices
 
         self.nq = self.model.nq
         self.nv = self.model.nv
@@ -27,10 +25,7 @@ class DynamicsCentroidal:
 
     def state_integrate(self, use_quat_nom=False):
         x = ca.SX.sym("x", 6 + self.nq)
-        dx_opt = ca.SX.sym("dx_opt", len(self.dx_opt_indices))
-
-        dx = ca.SX.zeros(6 + self.nv)  # The other DXs remain zero
-        dx[self.dx_opt_indices] = dx_opt
+        dx = ca.SX.sym("dx", 6 + self.nv)
 
         h = x[:6]
         q = x[6:]
@@ -56,7 +51,7 @@ class DynamicsCentroidal:
         h_next = h + dh
         x_next = ca.vertcat(h_next, q_next)
 
-        return ca.Function("integrate", [x, dx_opt], [x_next], ["x", "dx_opt"], ["x_next"])
+        return ca.Function("integrate", [x, dx], [x_next], ["x", "dx"], ["x_next"])
     
     def state_difference(self):
         x0 = ca.SX.sym("x0", 6 + self.nq)

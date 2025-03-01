@@ -11,7 +11,7 @@
         xyz="0.000458 0.005261 0.000665"
         rpy="0 0 0" />
       <mass
-        value="35.86" />
+        value="33.86" />  <!-- removed 2.0kg for Lidar -->
       <inertia
         ixx="0.27466"
         ixy="-0.000622"
@@ -26,7 +26,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="../meshes/base_link.dae" />
+          filename="../meshes/base_link_no_lidar.dae" />
       </geometry>
       <material
         name="">
@@ -162,7 +162,7 @@
   </link>
   <joint
     name="joint_imu"
-    type="fixed" dont_collapse="true">
+    type="fixed">
     <origin
       xyz="0 -0.02341 0.04927"
       rpy="0 0 0" />
@@ -535,7 +535,7 @@
   </link>
   <joint
     name="FL_foot_joint"
-    type="fixed" dont_collapse="true">
+    type="fixed">
     <origin
       xyz="0 0 -0.35"
       rpy="0 0 0" />
@@ -551,7 +551,7 @@
         xyz="-0.009305 0.010228 0.000264"
         rpy="0 0 0" />
       <mass
-        value="2.256" />
+        value="2.673" />
       <inertia
         ixx="0.0026431"
         ixy="-0.00019234"
@@ -829,7 +829,7 @@
   </link>
   <joint
     name="FR_foot_joint"
-    type="fixed" dont_collapse="true">
+    type="fixed">
     <origin
       xyz="0 0 -0.35"
       rpy="0 0 0" />
@@ -845,7 +845,7 @@
         xyz="0.009305 -0.010228 0.000264"
         rpy="0 0 0" />
       <mass
-        value="2.256" />
+        value="2.673" />
       <inertia
         ixx="0.0026431"
         ixy="-0.00019234"
@@ -1122,7 +1122,7 @@
   </link>
   <joint
     name="RL_foot_joint"
-    type="fixed" dont_collapse="true">
+    type="fixed">
     <origin
       xyz="0 0 -0.35"
       rpy="0 0 0" />
@@ -1415,7 +1415,7 @@
   </link>
   <joint
     name="RR_foot_joint"
-    type="fixed" dont_collapse="true">
+    type="fixed">
     <origin
       xyz="0 -8.6984E-05 -0.35"
       rpy="0 0 0" />

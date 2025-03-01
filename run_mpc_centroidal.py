@@ -15,12 +15,10 @@ nodes = 10
 dt_min = 0.02  # used for simulation
 dt_max = 0.05
 
-# Only for B2G
+# Tracking target: Base velocity (and arm task for B2G)
+base_vel_des = np.array([0.3, 0, 0, 0, 0, 0])  # linear + angular
 arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.2, 0, 0])
-
-# Tracking goal: linear and angular momentum
-com_goal = np.array([0.2, 0, 0, 0, 0, 0])
+arm_vel_des = np.array([0.3, 0.3, 0])
 
 # Swing params
 swing_height = 0.07
@@ -32,7 +30,7 @@ mpc_loops = 50
 # Solver
 solver = "fatrop"
 warm_start = True
-compile_solver = False
+compile_solver = True
 load_compiled_solver = None
 # load_compiled_solver = "libsolver_trot_N8_dt03.so"
 
@@ -43,7 +41,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
     x_init = np.concatenate((np.zeros(6), q0))
     solve_times = []
 
-    if compile_solver or load_compiled_solver:
+    if solver == "fatrop" and compile_solver:
         if load_compiled_solver:
             # Load solver
             solver_function = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
@@ -60,9 +58,10 @@ def mpc_loop(ocp, robot_instance, q0, N):
             contact_schedule = ocp.opti.value(ocp.contact_schedule)
             swing_schedule = ocp.opti.value(ocp.swing_schedule)
             n_contacts = ocp.opti.value(ocp.n_contacts)
+            swing_period = ocp.opti.value(ocp.swing_period)
 
-            params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts,
-                      robot.Q_diag, robot.R_diag, com_goal, swing_height, swing_vel_limits]
+            params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
+                      swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
 
             if ocp.arm_ee_id:
                 params += [arm_f_des, arm_vel_des]
@@ -131,9 +130,8 @@ def main():
     # Setup OCP
     ocp = OCP_Centroidal(robot, nodes)
     ocp.set_time_params(dt_min, dt_max)
-    ocp.set_com_goal(com_goal)
     ocp.set_swing_params(swing_height, swing_vel_limits)
-    ocp.set_arm_task(arm_f_des, arm_vel_des)
+    ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag)
     ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
 
