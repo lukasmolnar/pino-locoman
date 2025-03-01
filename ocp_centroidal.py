@@ -1,6 +1,7 @@
 import time
 import numpy as np
 import casadi as ca
+import osqp
 from scipy import sparse
 
 from helpers import *
@@ -284,7 +285,6 @@ class OCP_Centroidal:
                 self.solver_function.generate("compiled_solver.c")
 
         elif solver == "osqp":
-            import osqp
             # Get all info from self.opti
             x = self.opti.x
             p = self.opti.p
@@ -342,7 +342,6 @@ class OCP_Centroidal:
             self.lam_g = self.sol.value(self.opti.lam_g)
 
         elif self.solver_type == "osqp":
-            import osqp
             ocp_params = ca.vertcat(
                 self.opti.value(self.x_init),
                 self.opti.value(self.dt_min),

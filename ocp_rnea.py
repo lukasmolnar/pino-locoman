@@ -2,6 +2,7 @@ import time
 import numpy as np
 import casadi as ca
 import pinocchio as pin
+import osqp
 from scipy import sparse
 
 from helpers import *
@@ -382,7 +383,6 @@ class OCP_RNEA:
             self.lam_g = self.sol.value(self.opti.lam_g)
 
         elif self.solver_type == "osqp":
-            import osqp
             ocp_params = ca.vertcat(
                 self.opti.value(self.x_init),
                 self.opti.value(self.tau_prev),
@@ -500,8 +500,8 @@ class OCP_RNEA:
     def _simulate_step(self, x_init, u):
         q = x_init[:self.nq]
         v = x_init[self.nq:]
-        forces = u[self.nv : self.nv + self.nf]
-        tau_j = u[self.nv + self.nf :]
+        forces = u[self.f_idx:self.tau_idx]
+        tau_j = u[self.tau_idx:]
         dt_sim = self.opti.value(self.dt_min)  # the first step size
 
         pin.framesForwardKinematics(self.model, self.data, q)
