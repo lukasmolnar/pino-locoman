@@ -12,4 +12,5 @@ nao_description
 # Other
 __pycache__
 .vscode
+plots
 examples_old
