@@ -33,24 +33,34 @@ class Robot:
         self.nj = self.nq - 7  # without base position and quaternion
 
         self.dynamics = dynamics
-        if self.dynamics not in ["centroidal", "rnea"]:
+
+        # Set initial state
+        if self.dynamics == "centroidal_vel":
+            # COM linear/angular momentum + generalized coordinates
+            self.x_init = np.concatenate((np.zeros(6), self.q0))
+
+        elif self.dynamics == "centroidal_acc" or self.dynamics == "rnea": 
+            # Generalized coordinates + velocities
+            self.x_init = np.concatenate((self.q0, np.zeros(self.nv)))
+
+        else:
             raise ValueError(f"Dynamics: {self.dynamics} not supported")
 
-        self.arm_ee_id = None
+        self.arm_id = None
 
     def set_gait_sequence(self, gait_type, gait_period):
         self.gait_sequence = GaitSequence(gait_type, gait_period)
-        self.ee_ids = [self.model.getFrameId(f) for f in self.gait_sequence.feet]
+        self.feet_ids = [self.model.getFrameId(f) for f in self.gait_sequence.feet]
         self.nf = 12  # forces at feet
 
     def add_arm_task(self, f_des, vel_des=None):
         self.nf += 3
-        self.arm_ee_id = self.model.getFrameId("gripperMover")
+        self.arm_id = self.model.getFrameId("gripperMover")
         self.arm_f_des = f_des
         self.arm_vel_des = vel_des
 
     def initialize_weights(self):
-        if self.dynamics == "centroidal":
+        if self.dynamics == "centroidal_vel":
             self.Q_diag = np.concatenate((
                 [500] * 6,  # com
                 [0] * 2,  # base x/y
@@ -59,12 +69,39 @@ class Robot:
                 [0],  # base rot z
                 [10] * 12,  # leg joint pos
             ))
-            if self.arm_ee_id:
+            if self.arm_id:
                 self.Q_diag = np.concatenate((self.Q_diag, [1] * 6))  # arm joint pos
 
             self.R_diag = np.concatenate((
                 [1e-3] * self.nf,  # forces
                 [1e-1] * self.nj,  # joint vel
+            ))
+
+        elif self.dynamics == "centroidal_acc":
+            Q_base_pos_diag = np.concatenate((
+                [0] * 2,  # base x/y
+                [10000],  # base z
+                [10000] * 2,  # base rot x/y
+                [0],  # base rot z
+            ))
+            Q_joint_pos_diag = np.tile([1000, 1000, 100], 4)  # hip, thigh, calf
+
+            if self.arm_id:
+                Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
+
+            assert(len(Q_joint_pos_diag) == self.nj)
+
+            Q_vel_diag = np.concatenate((
+                [1000] * 2,  # base lin x/y
+                [10000],  # base lin z
+                [1000] * 3,  # base ang
+                [1] * self.nj,  # joint vel (all of them)
+            ))
+
+            self.Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
+            self.R_diag = np.concatenate((
+                [1e-3] * self.nj,  # joint acc
+                [1e-3] * self.nf,  # forces
             ))
 
         elif self.dynamics == "rnea":
@@ -76,7 +113,7 @@ class Robot:
             ))
             Q_joint_pos_diag = np.tile([1000, 1000, 100], 4)  # hip, thigh, calf
 
-            if self.arm_ee_id:
+            if self.arm_id:
                 Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
 
             assert(len(Q_joint_pos_diag) == self.nj)

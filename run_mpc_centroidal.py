@@ -4,11 +4,12 @@ import pinocchio as pin
 import casadi as ca
 
 from utils.helpers import *
-from optimal_control_problem import OCP_Centroidal
+from optimal_control_problem import OCPCentroidalVel, OCPCentroidalAcc
 
 # Problem parameters
-# robot = B2(dynamics="centroidal", reference_pose="standing")
-robot = B2G(dynamics="centroidal", reference_pose="standing_with_arm_up", ignore_arm=False)
+# robot = B2(dynamics="centroidal_vel", reference_pose="standing")
+robot = B2G(dynamics="centroidal_acc", reference_pose="standing_with_arm_up", ignore_arm=False)
+ocp_class = OCPCentroidalAcc
 gait_type = "trot"
 gait_period = 0.5
 nodes = 10
@@ -37,8 +38,7 @@ load_compiled_solver = None
 debug = False  # print info
 
 
-def mpc_loop(ocp, robot_instance, q0, N):
-    x_init = np.concatenate((np.zeros(6), q0))
+def mpc_loop(ocp, robot_instance, x_init, N):
     solve_times = []
 
     if solver == "fatrop" and compile_solver:
@@ -64,7 +64,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
             params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
                       swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
 
-            if ocp.arm_ee_id:
+            if ocp.arm_id:
                 params += [arm_f_des, arm_vel_des]
             if warm_start:
                 ocp.warm_start()
@@ -129,13 +129,15 @@ def main():
     robot_instance.display(q0)
 
     # Setup OCP
-    ocp = OCP_Centroidal(robot, nodes)
+    ocp = ocp_class(robot, nodes)
     ocp.setup_problem()
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag)
-    ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
+
+    x_init = robot.x_init
+    ocp = mpc_loop(ocp, robot_instance, x_init, mpc_loops)
 
     if debug:
         for k in range(len(ocp.qs)):

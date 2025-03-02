@@ -12,7 +12,7 @@ class OCP_RNEA(OCP):
         super().__init__(robot, nodes)
         self.tau_nodes = tau_nodes
 
-        self.dyn = DynamicsRNEA(self.model, self.mass, self.ee_ids)
+        self.dyn = DynamicsRNEA(self.model, self.mass, self.feet_ids)
 
         # Store solutions
         self.qs = []
@@ -22,7 +22,6 @@ class OCP_RNEA(OCP):
         self.taus = []
 
     def setup_variables(self):
-
         # State size
         self.nx = self.nq + self.nv  # positions + velocities
         self.ndx_opt = self.nv * 2  # position deltas + velocities
@@ -55,7 +54,7 @@ class OCP_RNEA(OCP):
 
         # Desired input: Use this for warm starting
         self.f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)  # gravity compensation
-        if self.arm_ee_id:
+        if self.arm_id:
             self.f_des = ca.vertcat(self.f_des, [0] * 3)  # zero force at end-effector
         self.u_des = ca.vertcat([0] * self.nv, self.f_des, [0] * self.nj)  # zero acc + torque
 
@@ -88,7 +87,7 @@ class OCP_RNEA(OCP):
         obj += err_dx.T @ Q @ err_dx
 
         return obj
-    
+
     def setup_dynamics_constraints(self, i):
         # Gather all state and input info
         dx = self.DX_opt[i]
@@ -109,7 +108,7 @@ class OCP_RNEA(OCP):
         self.opti.subject_to(dv_next == dv + a * dt)
 
         # RNEA constraint
-        tau_rnea = self.dyn.rnea_dynamics(self.arm_ee_id)(q, v, a, forces)
+        tau_rnea = self.dyn.tau_dynamics(self.arm_id)(q, v, a, forces)
         self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
 
         # Torque constraints
@@ -211,7 +210,7 @@ class OCP_RNEA(OCP):
 
             if not retract_all:
                 return
-            
+
         x_last = self.dyn.state_integrate()(x_init, self.DX_prev[-1])
         self.qs.append(np.array(x_last[:self.nq]))
         self.vs.append(np.array(x_last[self.nq:]))
@@ -259,7 +258,7 @@ class OCP_RNEA(OCP):
 
         pin.framesForwardKinematics(self.model, self.data, q)
         f_ext = [pin.Force(np.zeros(6)) for _ in range(self.model.njoints)]
-        for idx, frame_id in enumerate(self.ee_ids):
+        for idx, frame_id in enumerate(self.feet_ids):
             joint_id = self.model.frames[frame_id].parentJoint
             translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation
             rotation_world_to_joint_frame = self.data.oMi[joint_id].rotation.T

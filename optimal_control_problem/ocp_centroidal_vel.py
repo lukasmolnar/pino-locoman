@@ -2,15 +2,15 @@ import numpy as np
 import casadi as ca
 
 from utils.helpers import *
-from dynamics import DynamicsCentroidal
+from dynamics import DynamicsCentroidalVel
 from .ocp import OCP
 
 
-class OCP_Centroidal(OCP):
+class OCPCentroidalVel(OCP):
     def __init__(self, robot, nodes):
         super().__init__(robot, nodes)
 
-        self.dyn = DynamicsCentroidal(self.model, self.mass, self.ee_ids)
+        self.dyn = DynamicsCentroidalVel(self.model, self.mass, self.feet_ids)
 
         # Store solutions
         self.hs = []
@@ -40,7 +40,7 @@ class OCP_Centroidal(OCP):
 
         # Desired input: Use this for warm starting
         self.f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)  # gravity compensation
-        if self.arm_ee_id:
+        if self.arm_id:
             self.f_des = ca.vertcat(self.f_des, [0] * 3)  # zero force at end-effector
         self.u_des = ca.vertcat(self.f_des, [0] * self.nj)  # zero joint vel
 
@@ -56,7 +56,7 @@ class OCP_Centroidal(OCP):
 
         # Dynamics constraint
         dx_next = self.DX_opt[i+1]
-        dx_dyn = self.dyn.centroidal_dynamics(self.arm_ee_id)(x, u, dq_b)
+        dx_dyn = self.dyn.dynamics(self.arm_id)(x, u, dq_b)
         self.opti.subject_to(dx_next == dx + dx_dyn * self.dts[i])
 
     def get_h(self, i):

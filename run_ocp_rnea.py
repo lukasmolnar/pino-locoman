@@ -54,7 +54,7 @@ def main():
     ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag, robot.W_diag)
 
-    x_init = np.concatenate((q0, np.zeros(model.nv)))
+    x_init = robot.x_init
     tau_prev = np.zeros(robot.nj)
     t_current = 0
 
@@ -74,8 +74,7 @@ def main():
 
         params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
                   swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
-
-        if ocp.arm_ee_id:
+        if ocp.arm_id:
             params += [arm_f_des, arm_vel_des]
 
         # RNEA params
@@ -107,7 +106,7 @@ def main():
             # RNEA
             pin.framesForwardKinematics(model, data, q)
             f_ext = [pin.Force(np.zeros(6)) for _ in range(model.njoints)]
-            for idx, frame_id in enumerate(robot.ee_ids):
+            for idx, frame_id in enumerate(robot.feet_ids):
                 joint_id = model.frames[frame_id].parentJoint
                 translation_joint_to_contact_frame = model.frames[frame_id].placement.translation
                 rotation_world_to_joint_frame = data.oMi[joint_id].rotation.T

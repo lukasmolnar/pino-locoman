@@ -5,7 +5,7 @@ import osqp
 from scipy import sparse
 
 from utils.helpers import *
-from dynamics import DynamicsRNEA
+from dynamics import DynamicsCentroidalVel
 
 
 class OCP:
@@ -14,9 +14,9 @@ class OCP:
         self.model = robot.model
         self.data = robot.data
         self.gait_sequence = robot.gait_sequence
-        self.ee_ids = robot.ee_ids
-        self.arm_ee_id = robot.arm_ee_id
-        self.n_feet = len(self.ee_ids)
+        self.feet_ids = robot.feet_ids
+        self.arm_id = robot.arm_id
+        self.n_feet = len(self.feet_ids)
 
         self.nq = robot.nq
         self.nv = robot.nv
@@ -110,7 +110,7 @@ class OCP:
             self.setup_dynamics_constraints(i)
 
             # Contact and swing constraints
-            for idx, frame_id in enumerate(self.ee_ids):
+            for idx, frame_id in enumerate(self.feet_ids):
                 f_e = forces[idx * 3 : (idx + 1) * 3]
 
                 # Get contact and swing info
@@ -126,9 +126,9 @@ class OCP:
                 # Swing: Zero force
                 self.opti.subject_to((1 - in_contact) * f_e == [0] * 3)
 
-                if i == 0 and type(self.dyn) == DynamicsRNEA:
-                    # RNEA: No state constraints at first time step
-                    # Centroidal: Inputs control velocity, so keep constraints
+                if i == 0 and type(self.dyn) != DynamicsCentroidalVel:
+                    # First step: No state constraints
+                    # CentroidalVel: Inputs control velocity, so keep constraints
                     continue
 
                 # Contact: Zero xy-velocity
@@ -154,15 +154,15 @@ class OCP:
             u_warm = self.opti.value(self.u_des)[:self.nu_opt[i]]
             self.opti.set_initial(self.U_opt[i], u_warm)
 
-            if i == 0 and type(self.dyn) == DynamicsRNEA:
-                # RNEA: No state constraints at first time step
-                # Centroidal: Inputs control velocity, so keep constraints
+            if i == 0 and type(self.dyn) != DynamicsCentroidalVel:
+                # First step: No state constraints
+                # CentroidalVel: Inputs control velocity, so keep constraints
                 continue
 
             # Arm task
-            if self.arm_ee_id:
+            if self.arm_id:
                 # Zero end-effector velocity
-                vel = self.dyn.get_frame_velocity(self.arm_ee_id)(q, v)
+                vel = self.dyn.get_frame_velocity(self.arm_id)(q, v)
                 vel_lin = vel[:3]
                 vel_diff = vel_lin - self.arm_vel_des
                 self.opti.subject_to(vel_diff == [0] * 3)
@@ -211,7 +211,7 @@ class OCP:
 
     def set_tracking_target(self, base_vel_des, arm_f_des, arm_vel_des):
         self.opti.set_value(self.base_vel_des, base_vel_des)
-        if self.arm_ee_id:
+        if self.arm_id:
             self.opti.set_value(self.arm_f_des, arm_f_des)
             self.opti.set_value(self.arm_vel_des, arm_vel_des)
 
@@ -259,7 +259,7 @@ class OCP:
             self.solver_params = [self.x_init, self.dt_min, self.dt_max, self.contact_schedule, self.swing_schedule,
                                   self.n_contacts, self.swing_period, self.swing_height, self.swing_vel_limits,
                                   self.Q_diag, self.R_diag, self.base_vel_des]
-            if self.arm_ee_id:
+            if self.arm_id:
                 self.solver_params += [self.arm_f_des, self.arm_vel_des]
             if warm_start:
                 self.solver_params += [self.opti.x]
@@ -304,7 +304,7 @@ class OCP:
                 self.opti.value(self.R_diag),
                 self.opti.value(self.base_vel_des),
             )
-            if self.arm_ee_id:
+            if self.arm_id:
                 self.solver_params = ca.vertcat(
                     self.solver_params,
                     self.opti.value(self.arm_f_des),

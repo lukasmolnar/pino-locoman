@@ -4,14 +4,15 @@ import pinocchio as pin
 import casadi as ca
 
 from utils.helpers import *
-from optimal_control_problem import OCP_Centroidal
+from optimal_control_problem import OCPCentroidalVel, OCPCentroidalAcc
 
 # Problem parameters
-# robot = B2(dynamics="centroidal", reference_pose="standing")
-robot = B2G(dynamics="centroidal", reference_pose="standing_with_arm_up", ignore_arm=False)
+# robot = B2(dynamics="centroidal_vel", reference_pose="standing")
+robot = B2G(dynamics="centroidal_acc", reference_pose="standing_with_arm_up", ignore_arm=False)
+ocp_class = OCPCentroidalAcc
 gait_type = "trot"
 gait_period = 0.5
-nodes = 14
+nodes = 10
 dt_min = 0.02  # used for simulation
 dt_max = 0.05
 
@@ -47,14 +48,14 @@ def main():
     pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
     # Setup OCP
-    ocp = OCP_Centroidal(robot, nodes)
+    ocp = ocp_class(robot, nodes)
     ocp.setup_problem()
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag)
 
-    x_init = np.concatenate((np.zeros(6), q0))
+    x_init = robot.x_init
     t_current = 0
 
     ocp.update_initial_state(x_init)
@@ -72,7 +73,7 @@ def main():
 
         params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
                   swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
-        if ocp.arm_ee_id:
+        if ocp.arm_id:
             params += [arm_f_des, arm_vel_des]
 
         start_time = time.time()
@@ -118,7 +119,7 @@ def main():
 
             pin.framesForwardKinematics(model, data, q)
             f_ext = [pin.Force(np.zeros(6)) for _ in range(model.njoints)]
-            for idx, frame_id in enumerate(robot.ee_ids):
+            for idx, frame_id in enumerate(robot.feet_ids):
                 joint_id = model.frames[frame_id].parentJoint
                 translation_joint_to_contact_frame = model.frames[frame_id].placement.translation
                 rotation_world_to_joint_frame = data.oMi[joint_id].rotation.T

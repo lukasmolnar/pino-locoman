@@ -40,8 +40,7 @@ debug = False  # print info
 plot = True
 
 
-def mpc_loop(ocp, robot_instance, q0, N):
-    x_init = np.concatenate((q0, np.zeros(robot.nv)))
+def mpc_loop(ocp, robot_instance, x_init, N):
     tau_prev = np.zeros(robot.nj)
     solve_times = []
     tau_diffs = []
@@ -73,7 +72,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
             params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
                       swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
 
-            if ocp.arm_ee_id:
+            if ocp.arm_id:
                 params += [arm_f_des, arm_vel_des]
             if warm_start:
                 ocp.warm_start()
@@ -163,7 +162,9 @@ def main():
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag, robot.W_diag)
-    ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
+
+    x_init = robot.x_init
+    ocp = mpc_loop(ocp, robot_instance, x_init, mpc_loops)
 
     if debug:
         for k in range(len(ocp.qs)):
@@ -179,7 +180,7 @@ def main():
             # RNEA
             pin.framesForwardKinematics(model, data, q)
             f_ext = [pin.Force(np.zeros(6)) for _ in range(model.njoints)]
-            for idx, frame_id in enumerate(robot.ee_ids):
+            for idx, frame_id in enumerate(robot.feet_ids):
                 joint_id = model.frames[frame_id].parentJoint
                 translation_joint_to_contact_frame = model.frames[frame_id].placement.translation
                 rotation_world_to_joint_frame = data.oMi[joint_id].rotation.T

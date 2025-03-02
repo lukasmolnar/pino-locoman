@@ -1,23 +1,12 @@
-import pinocchio as pin
 import pinocchio.casadi as cpin
 import casadi as ca
 
+from .dynamics import Dynamics
 
-class DynamicsRNEA:
-    def __init__(
-            self,
-            model,
-            mass,
-            ee_ids,
-        ):
-        self.model = cpin.Model(model)
-        self.data = self.model.createData()
-        self.mass = mass
-        self.ee_ids = ee_ids
 
-        self.nq = self.model.nq
-        self.nv = self.model.nv
-        self.nj = self.nq - 7  # without base position and quaternion
+class DynamicsRNEA(Dynamics):
+    def __init__(self, model, mass, feet_ids):
+        super().__init__(model, mass, feet_ids)
 
     def state_integrate(self):
         x = ca.SX.sym("x", self.nq + self.nv)
@@ -50,22 +39,22 @@ class DynamicsRNEA:
 
         return ca.Function("difference", [x0, x1], [dx], ["x0", "x1"], ["dx"])
 
-    def rnea_dynamics(self, arm_ee_id=None):
+    def tau_dynamics(self, arm_id=None):
         # States
         q = ca.SX.sym("q", self.nq)  # positions
         v = ca.SX.sym("v", self.nv)  # velocities
         a = ca.SX.sym("a", self.nv)  # accelerations
 
         # Inputs
-        nf = len(self.ee_ids)
-        if arm_ee_id:
+        nf = len(self.feet_ids)
+        if arm_id:
             nf += 1
         forces = ca.SX.sym("forces", 3 * nf)  # end-effector forces
 
         # RNEA
         cpin.framesForwardKinematics(self.model, self.data, q)
         f_ext = [cpin.Force(ca.SX.zeros(6)) for _ in range(self.model.njoints)]
-        for idx, frame_id in enumerate(self.ee_ids):
+        for idx, frame_id in enumerate(self.feet_ids):
             # TODO: Check this. it is from OCS2.
             joint_id = self.model.frames[frame_id].parentJoint
             translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation
@@ -77,26 +66,7 @@ class DynamicsRNEA:
             f = ca.vertcat(f_lin, f_ang)
             f_ext[joint_id] = cpin.Force(f)
 
+        # Return whole-body torques (base + joints)
         tau_rnea = cpin.rnea(self.model, self.data, q, v, a, f_ext)
 
         return ca.Function("rnea_dyn", [q, v, a, forces], [tau_rnea], ["q", "v", "a", "forces"], ["tau_rnea"])
-
-    def get_frame_position(self, frame_id):
-        q = ca.SX.sym("q", self.nq)
-
-        # TODO: Check Pinocchio terms
-        cpin.forwardKinematics(self.model, self.data, q)
-        cpin.updateFramePlacement(self.model, self.data, frame_id)
-        pos = self.data.oMf[frame_id].translation
-
-        return ca.Function("frame_pos", [q], [pos], ["q"], ["pos"])
-
-    def get_frame_velocity(self, frame_id, ref=pin.LOCAL_WORLD_ALIGNED):
-        q = ca.SX.sym("q", self.nq)
-        dq = ca.SX.sym("dq", self.nv)
-
-        # TODO: Check Pinocchio terms
-        cpin.forwardKinematics(self.model, self.data, q, dq)
-        vel = cpin.getFrameVelocity(self.model, self.data, frame_id, ref).vector
-
-        return ca.Function("frame_vel", [q, dq], [vel], ["q", "dq"], ["vel"])
