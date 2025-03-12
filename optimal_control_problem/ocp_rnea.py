@@ -256,9 +256,13 @@ class OCP_RNEA(OCP):
         tau_j = u[self.tau_idx:]
         dt_sim = self.opti.value(self.dt_min)  # the first step size
 
+        ee_ids = self.feet_ids.copy()
+        if self.arm_id:
+            ee_ids.append(self.arm_id)
+
         pin.framesForwardKinematics(self.model, self.data, q)
         f_ext = [pin.Force(np.zeros(6)) for _ in range(self.model.njoints)]
-        for idx, frame_id in enumerate(self.feet_ids):
+        for idx, frame_id in enumerate(ee_ids):
             joint_id = self.model.frames[frame_id].parentJoint
             translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation
             rotation_world_to_joint_frame = self.data.oMi[joint_id].rotation.T

@@ -103,10 +103,14 @@ def main():
             print("v: ", v.T)
             print("tau: ", tau.T)
 
+            ee_ids = ocp.feet_ids
+            if ocp.arm_id:
+                ee_ids.append(ocp.arm_id)
+
             # RNEA
             pin.framesForwardKinematics(model, data, q)
             f_ext = [pin.Force(np.zeros(6)) for _ in range(model.njoints)]
-            for idx, frame_id in enumerate(robot.feet_ids):
+            for idx, frame_id in enumerate(ee_ids):
                 joint_id = model.frames[frame_id].parentJoint
                 translation_joint_to_contact_frame = model.frames[frame_id].placement.translation
                 rotation_world_to_joint_frame = data.oMi[joint_id].rotation.T

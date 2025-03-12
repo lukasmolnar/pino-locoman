@@ -40,21 +40,21 @@ class DynamicsRNEA(Dynamics):
         return ca.Function("difference", [x0, x1], [dx], ["x0", "x1"], ["dx"])
 
     def tau_dynamics(self, arm_id=None):
-        # States
+        # Generalized coordinates
         q = ca.SX.sym("q", self.nq)  # positions
         v = ca.SX.sym("v", self.nv)  # velocities
         a = ca.SX.sym("a", self.nv)  # accelerations
 
-        # Inputs
-        nf = len(self.feet_ids)
+        # End-effector forces
+        ee_ids = self.feet_ids.copy()
         if arm_id:
-            nf += 1
-        forces = ca.SX.sym("forces", 3 * nf)  # end-effector forces
+            ee_ids.append(arm_id)
+        forces = ca.SX.sym("forces", 3 * len(ee_ids))
 
         # RNEA
         cpin.framesForwardKinematics(self.model, self.data, q)
         f_ext = [cpin.Force(ca.SX.zeros(6)) for _ in range(self.model.njoints)]
-        for idx, frame_id in enumerate(self.feet_ids):
+        for idx, frame_id in enumerate(ee_ids):
             # TODO: Check this. it is from OCS2.
             joint_id = self.model.frames[frame_id].parentJoint
             translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation

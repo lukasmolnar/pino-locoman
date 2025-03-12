@@ -8,19 +8,19 @@ from utils.helpers import *
 from optimal_control_problem import OCP_RNEA
 
 # Problem parameters
-# robot = B2(dynamics="rnea", reference_pose="standing")
-robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
+robot = B2(dynamics="rnea", reference_pose="standing")
+# robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_period = 0.5
-nodes = 12
-tau_nodes = 2  # remove torques afterwards
+gait_period = 0.8
+nodes = 14
+tau_nodes = 3  # remove torques afterwards
 dt_min = 0.01  # used for simulation
-dt_max = 0.05
+dt_max = 0.08
 
 # Tracking target: Base velocity (and arm task for B2G)
 base_vel_des = np.array([0.3, 0, 0, 0, 0, 0])  # linear + angular
 arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.3, 0.3, 0])
+arm_vel_des = np.array([0, 0, 0])
 
 # Swing params
 swing_height = 0.07
@@ -33,8 +33,8 @@ mpc_loops = 100
 solver = "fatrop"
 warm_start = True
 compile_solver = True
-load_compiled_solver = None
-# load_compiled_solver = "libsolver_b2g_dts_N12_tau2.so"
+# load_compiled_solver = None
+load_compiled_solver = "libsolver_b2_comxy_N14_tau3.so"
 
 debug = False  # print info
 plot = True
@@ -177,10 +177,14 @@ def main():
             print("v: ", v.T)
             print("tau: ", tau.T)
 
+            ee_ids = ocp.feet_ids
+            if ocp.arm_id:
+                ee_ids.append(ocp.arm_id)
+
             # RNEA
             pin.framesForwardKinematics(model, data, q)
             f_ext = [pin.Force(np.zeros(6)) for _ in range(model.njoints)]
-            for idx, frame_id in enumerate(robot.feet_ids):
+            for idx, frame_id in enumerate(ee_ids):
                 joint_id = model.frames[frame_id].parentJoint
                 translation_joint_to_contact_frame = model.frames[frame_id].placement.translation
                 rotation_world_to_joint_frame = data.oMi[joint_id].rotation.T
