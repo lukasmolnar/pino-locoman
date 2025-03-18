@@ -6,22 +6,22 @@ from utils.helpers import *
 from optimal_control_problem import OCP_RNEA
 
 # Problem parameters
-# robot = Go2(dynamics="rnea", reference_pose="standing")
-robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
+robot = B2(dynamics="rnea", reference_pose="standing")
+# robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_period = 0.5
-nodes = 12
-tau_nodes = 2  # remove torques afterwards
-dt_min = 0.02  # used for simulation
-dt_max = 0.05
+gait_period = 0.8
+nodes = 14
+tau_nodes = 3  # remove torques afterwards
+dt_min = 0.01  # used for simulation
+dt_max = 0.08
 
 # Tracking target: Base velocity (and arm task for B2G)
-base_vel_des = np.array([0.3, 0, 0, 0, 0, 0])  # linear + angular
+base_vel_des = np.array([0.2, 0, 0, 0, 0, 0])  # linear + angular
 arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.3, 0.3, 0])
+arm_vel_des = np.array([0, 0, 0])
 
 # Swing params
-swing_height = 0.1
+swing_height = 0.07
 swing_vel_limits = [0.1, -0.2]
 
 # Solver
@@ -33,8 +33,6 @@ debug = False  # print info
 
 def main():
     robot.set_gait_sequence(gait_type, gait_period)
-    if type(robot) == B2G and not robot.ignore_arm:
-        robot.add_arm_task(arm_f_des, arm_vel_des)
     robot.initialize_weights()
 
     robot_instance = robot.robot

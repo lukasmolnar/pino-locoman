@@ -18,7 +18,7 @@ dt_min = 0.01  # used for simulation
 dt_max = 0.08
 
 # Tracking target: Base velocity (and arm task for B2G)
-base_vel_des = np.array([0.3, 0, 0, 0, 0, 0])  # linear + angular
+base_vel_des = np.array([0.2, 0, 0, 0, 0, 0])  # linear + angular
 arm_f_des = np.array([0, 0, 0])
 arm_vel_des = np.array([0, 0, 0])
 
@@ -33,8 +33,8 @@ mpc_loops = 100
 solver = "fatrop"
 warm_start = True
 compile_solver = True
-# load_compiled_solver = None
-load_compiled_solver = "libsolver_b2_comxy_N14_tau3.so"
+load_compiled_solver = None
+# load_compiled_solver = "libsolver_b2g_fix_N14_tau3.so"
 
 debug = False  # print info
 plot = True
@@ -88,7 +88,6 @@ def mpc_loop(ocp, robot_instance, x_init, N):
             end_time = time.time()
             sol_time = end_time - start_time
             solve_times.append(sol_time)
-
             print("Solve time (ms): ", sol_time * 1000)
 
             # Retract solution and update x_init
@@ -138,8 +137,6 @@ def mpc_loop(ocp, robot_instance, x_init, N):
 
 def main():
     robot.set_gait_sequence(gait_type, gait_period)
-    if type(robot) == B2G and not robot.ignore_arm:
-        robot.add_arm_task(arm_f_des, arm_vel_des)
     robot.initialize_weights()
 
     robot_instance = robot.robot

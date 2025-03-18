@@ -31,6 +31,7 @@ class Robot:
         self.nq = self.model.nq
         self.nv = self.model.nv
         self.nj = self.nq - 7  # without base position and quaternion
+        self.nf = 12  # forces at feet
 
         self.dynamics = dynamics
 
@@ -51,13 +52,6 @@ class Robot:
     def set_gait_sequence(self, gait_type, gait_period):
         self.gait_sequence = GaitSequence(gait_type, gait_period)
         self.feet_ids = [self.model.getFrameId(f) for f in self.gait_sequence.feet]
-        self.nf = 12  # forces at feet
-
-    def add_arm_task(self, f_des, vel_des):
-        self.nf += 3
-        self.arm_id = self.model.getFrameId("gripperStator", type=pin.FIXED_JOINT)
-        self.arm_f_des = f_des
-        self.arm_vel_des = vel_des
 
     def initialize_weights(self):
         if self.dynamics == "centroidal_vel":
@@ -114,14 +108,15 @@ class Robot:
             Q_joint_pos_diag = np.tile([1000, 500, 500], 4)  # hip, thigh, calf
 
             if self.arm_id:
-                Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [10] * 6))  # arm
+                Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
 
             assert(len(Q_joint_pos_diag) == self.nj)
 
             Q_vel_diag = np.concatenate((
-                [5000] * 2,  # base lin x/y
+                [2000] * 2,  # base lin x/y
                 [1000],  # base lin z
-                [2000] * 3,  # base ang
+                [1000] * 2,  # base ang x/y
+                [2000],  # base ang z
                 [2] * self.nj,  # joint vel (all of them)
             ))
 
@@ -183,6 +178,9 @@ class B2G(Robot):
         self.joint_torque_max = np.tile([200, 200, 320], 4)
 
         if not self.ignore_arm:
+            # Set end-effector frame
+            self.arm_id = self.model.getFrameId("gripperStator", type=pin.FIXED_JOINT)
+
             # Arm joint limits
             self.joint_pos_min = np.concatenate((
                 self.joint_pos_min,

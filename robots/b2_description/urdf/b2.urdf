@@ -7,18 +7,32 @@
   <link
     name="base_link">
     <inertial>
+      <!-- Without Lidar -->
       <origin
+        xyz="-0.05 -0.007 -0.009840"
+        rpy="0 0 0" />  <!-- measured CoM on hardware -->
+      <mass
+        value="33.86" />
+      <inertia
+        ixx="0.21092"
+        ixy="-0.000622"
+        ixz="0.12531"
+        iyy="0.7639"
+        iyz="-0.00139"
+        izz="0.9483" />
+      <!-- With Lidar -->
+      <!-- <origin
         xyz="0.000458 0.005261 0.000665"
         rpy="0 0 0" />
       <mass
-        value="33.86" />  <!-- removed 2.0kg for Lidar -->
+        value="35.86" />
       <inertia
         ixx="0.27466"
         ixy="-0.000622"
         ixz="0.00315"
         iyy="1.0618"
         iyz="-0.00139"
-        izz="1.1825" />
+        izz="1.1825" /> -->
     </inertial>
     <visual>
       <origin

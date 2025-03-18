@@ -52,10 +52,16 @@ class OCP_RNEA(OCP):
         x_des = ca.vertcat(self.robot.q0, self.base_vel_des, [0] * self.nj)  # Nominal q + base target + zero joint vel
         self.dx_des = self.dyn.state_difference()(self.x_init, x_des)
 
-        # Desired input: Use this for warm starting
-        self.f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)  # gravity compensation
+        # Desired forces, TODO: customize weight distribution
+        f_gravity = 9.81 * self.mass
+        # f_front = ca.repmat(ca.vertcat(0, 0, 0.8 * f_gravity / self.n_contacts), 2, 1)
+        # f_rear = ca.repmat(ca.vertcat(0, 0, 1.2 * f_gravity / self.n_contacts), 2, 1)
+        # self.f_des = ca.vertcat(f_front, f_rear)
+        self.f_des = ca.repmat(ca.vertcat(0, 0, f_gravity / self.n_contacts), self.n_feet, 1)
         if self.arm_id:
             self.f_des = ca.vertcat(self.f_des, [0] * 3)  # zero force at end-effector
+
+        # Desired input: Use this for warm starting
         self.u_des = ca.vertcat([0] * self.nv, self.f_des, [0] * self.nj)  # zero acc + torque
 
     def setup_objective(self):

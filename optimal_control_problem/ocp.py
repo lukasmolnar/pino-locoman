@@ -132,7 +132,7 @@ class OCP:
                     continue
 
                 # Contact: Zero xy-velocity
-                vel = self.dyn.get_frame_velocity(frame_id)(q, v)
+                vel = self.dyn.get_frame_velocity(frame_id, relative_to_base=False)(q, v)
                 vel_xy = vel[:2]
                 self.opti.subject_to(in_contact * vel_xy == [0] * 2)
 
@@ -154,22 +154,22 @@ class OCP:
             u_warm = self.opti.value(self.u_des)[:self.nu_opt[i]]
             self.opti.set_initial(self.U_opt[i], u_warm)
 
+            # Arm force task
+            if self.arm_id:
+                f_e = forces[3*self.n_feet:]
+                self.opti.subject_to(f_e == self.arm_f_des)
+
             if i == 0 and type(self.dyn) != DynamicsCentroidalVel:
                 # First step: No state constraints
                 # CentroidalVel: Inputs control velocity, so keep constraints
                 continue
 
-            # Arm task
+            # Arm velocity task
             if self.arm_id:
-                # Zero end-effector velocity
-                vel = self.dyn.get_frame_velocity(self.arm_id)(q, v)
+                vel = self.dyn.get_frame_velocity(self.arm_id, relative_to_base=True)(q, v)
                 vel_lin = vel[:3]
                 vel_diff = vel_lin - self.arm_vel_des
                 self.opti.subject_to(vel_diff == [0] * 3)
-
-                # Force at end-effector (after all feet)
-                f_e = forces[3*self.n_feet:]
-                self.opti.subject_to(f_e == self.arm_f_des)
 
             # Joint limits
             pos_min = self.robot.joint_pos_min
