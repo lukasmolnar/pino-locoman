@@ -7,19 +7,19 @@ from utils.helpers import *
 from optimal_control_problem import OCPCentroidalVel, OCPCentroidalAcc
 
 # Problem parameters
-# robot = B2(dynamics="centroidal_vel", reference_pose="standing")
-robot = B2G(dynamics="centroidal_acc", reference_pose="standing_with_arm_up", ignore_arm=False)
+robot = B2(dynamics="centroidal_acc", reference_pose="standing")
+# robot = B2G(dynamics="centroidal_acc", reference_pose="standing_with_arm_up", ignore_arm=False)
 ocp_class = OCPCentroidalAcc
 gait_type = "trot"
 gait_period = 0.5
 nodes = 10
 dt_min = 0.02  # used for simulation
-dt_max = 0.05
+dt_max = 0.06
 
-# Tracking target: Base velocity (and arm task for B2G)
-base_vel_des = np.array([0.3, 0, 0, 0, 0, 0])  # linear + angular
-arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.3, 0.3, 0])
+# Tracking targets
+base_vel_des = np.array([0.2, 0, 0, 0, 0, 0])  # linear + angular
+ext_force_des = np.array([0, 0, 0])
+arm_vel_des = np.array([0, 0, 0])
 
 # Swing params
 swing_height = 0.07
@@ -34,8 +34,6 @@ debug = False  # print info
 
 def main():
     robot.set_gait_sequence(gait_type, gait_period)
-    if type(robot) == B2G and not robot.ignore_arm:
-        robot.add_arm_task(arm_f_des, arm_vel_des)
     robot.initialize_weights()
 
     robot_instance = robot.robot
@@ -52,7 +50,7 @@ def main():
     ocp.setup_problem()
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
-    ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)
+    ocp.set_tracking_targets(base_vel_des, ext_force_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag)
 
     x_init = robot.x_init
@@ -73,8 +71,11 @@ def main():
 
         params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
                   swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
-        if ocp.arm_id:
-            params += [arm_f_des, arm_vel_des]
+
+        if ocp.ext_force_frame:
+            params += [ext_force_des]
+        if ocp.arm_ee_frame:
+            params += [arm_vel_des]
 
         start_time = time.time()
         sol_x = ocp.solver_function(*params)
@@ -133,6 +134,9 @@ def main():
 
             tau_rnea = pin.rnea(model, data, q, v, a, f_ext)
             print("tau rnea: ", tau_rnea)
+
+    T = sum([ocp.opti.value(dt) for dt in ocp.dts])
+    print("Horizon length (s): ", T)
 
     # Visualize
     robot_instance.initViewer()

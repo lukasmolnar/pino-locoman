@@ -47,23 +47,25 @@ class Robot:
         else:
             raise ValueError(f"Dynamics: {self.dynamics} not supported")
 
-        self.arm_id = None
+        self.ext_force_frame = None  # external force
+        self.arm_ee_frame = None  # arm end-effector
+        self.ignore_arm = True
 
     def set_gait_sequence(self, gait_type, gait_period):
         self.gait_sequence = GaitSequence(gait_type, gait_period)
-        self.feet_ids = [self.model.getFrameId(f) for f in self.gait_sequence.feet]
+        self.foot_frames = [self.model.getFrameId(f) for f in self.gait_sequence.feet]
 
     def initialize_weights(self):
         if self.dynamics == "centroidal_vel":
             self.Q_diag = np.concatenate((
-                [500] * 6,  # com
+                [1000] * 6,  # com
                 [0] * 2,  # base x/y
-                [500],  # base z
-                [1000] * 2,  # base rot x/y
+                [1000],  # base z
+                [10000] * 2,  # base rot x/y
                 [0],  # base rot z
-                [10] * 12,  # leg joint pos
+                [100] * 12,  # leg joint pos
             ))
-            if self.arm_id:
+            if not self.ignore_arm:
                 self.Q_diag = np.concatenate((self.Q_diag, [1] * 6))  # arm joint pos
 
             self.R_diag = np.concatenate((
@@ -80,7 +82,7 @@ class Robot:
             ))
             Q_joint_pos_diag = np.tile([1000, 1000, 100], 4)  # hip, thigh, calf
 
-            if self.arm_id:
+            if not self.ignore_arm:
                 Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
 
             assert(len(Q_joint_pos_diag) == self.nj)
@@ -107,7 +109,7 @@ class Robot:
             ))
             Q_joint_pos_diag = np.tile([1000, 500, 500], 4)  # hip, thigh, calf
 
-            if self.arm_id:
+            if not self.ignore_arm:
                 Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
 
             assert(len(Q_joint_pos_diag) == self.nj)
@@ -134,7 +136,7 @@ class Robot:
 
 
 class B2(Robot):
-    def __init__(self, dynamics, reference_pose="standing"):
+    def __init__(self, dynamics, reference_pose="standing", payload=False):
         urdf_path = "robots/b2_description/urdf/b2.urdf"
         srdf_path = "robots/b2_description/srdf/b2.srdf"
         super().__init__(urdf_path, srdf_path, dynamics, reference_pose)
@@ -144,6 +146,11 @@ class B2(Robot):
         self.joint_pos_max = np.tile([0.87, 4.69, -0.43], 4)
         self.joint_vel_max = np.tile([23.0, 23.0, 14.0], 4)
         self.joint_torque_max = np.tile([200, 200, 320], 4)
+
+        if payload:
+            # External force as payload on base
+            self.ext_force_frame = self.model.getFrameId("base_payload", type=pin.FIXED_JOINT)
+            self.nf += 3
 
 
 class Go2(Robot):
@@ -163,13 +170,13 @@ class B2G(Robot):
     def __init__(self, dynamics, reference_pose="standing_with_arm_up", ignore_arm=False):
         urdf_path = "robots/b2g_description/urdf/b2g.urdf"
         srdf_path = "robots/b2g_description/srdf/b2g.srdf"
-        self.ignore_arm = ignore_arm
-        if self.ignore_arm:
+        if ignore_arm:
             lock_joints = range(14, 21)  # all arm joints
         else:
             lock_joints = [20]  # just gripper joint
 
         super().__init__(urdf_path, srdf_path, dynamics, reference_pose, lock_joints=lock_joints)
+        self.ignore_arm = ignore_arm
 
         # Leg joint limits (tiled: hip, thigh, calf)
         self.joint_pos_min = np.tile([-0.87, -0.94, -2.82], 4)
@@ -178,8 +185,10 @@ class B2G(Robot):
         self.joint_torque_max = np.tile([200, 200, 320], 4)
 
         if not self.ignore_arm:
-            # Set end-effector frame
-            self.arm_id = self.model.getFrameId("gripperStator", type=pin.FIXED_JOINT)
+            # External force at gripper
+            self.ext_force_frame = self.model.getFrameId("gripperStator", type=pin.FIXED_JOINT)
+            self.arm_ee_frame = self.model.getFrameId("gripperStator", type=pin.FIXED_JOINT)
+            self.nf += 3
 
             # Arm joint limits
             self.joint_pos_min = np.concatenate((

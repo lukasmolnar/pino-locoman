@@ -57,6 +57,12 @@
         </geometry>
     </collision>
   </link>
+  <joint name="base_payload" type="fixed">
+    <origin xyz="-0.25 0 0.075" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="payload"/>
+  </joint>
+  <link name="payload"/>
   <link
     name="lidar_link">
     <inertial>

@@ -12,7 +12,7 @@ class OCP_RNEA(OCP):
         super().__init__(robot, nodes)
         self.tau_nodes = tau_nodes
 
-        self.dyn = DynamicsRNEA(self.model, self.mass, self.feet_ids)
+        self.dyn = DynamicsRNEA(self.model, self.mass, self.foot_frames)
 
         # Store solutions
         self.qs = []
@@ -54,11 +54,11 @@ class OCP_RNEA(OCP):
 
         # Desired forces, TODO: customize weight distribution
         f_gravity = 9.81 * self.mass
-        # f_front = ca.repmat(ca.vertcat(0, 0, 0.8 * f_gravity / self.n_contacts), 2, 1)
-        # f_rear = ca.repmat(ca.vertcat(0, 0, 1.2 * f_gravity / self.n_contacts), 2, 1)
-        # self.f_des = ca.vertcat(f_front, f_rear)
-        self.f_des = ca.repmat(ca.vertcat(0, 0, f_gravity / self.n_contacts), self.n_feet, 1)
-        if self.arm_id:
+        f_front = ca.repmat(ca.vertcat(0, 0, 0.8 * f_gravity / self.n_contacts), 2, 1)
+        f_rear = ca.repmat(ca.vertcat(0, 0, 1.2 * f_gravity / self.n_contacts), 2, 1)
+        self.f_des = ca.vertcat(f_front, f_rear)
+        # self.f_des = ca.repmat(ca.vertcat(0, 0, f_gravity / self.n_contacts), self.n_feet, 1)
+        if self.ext_force_frame:
             self.f_des = ca.vertcat(self.f_des, [0] * 3)  # zero force at end-effector
 
         # Desired input: Use this for warm starting
@@ -114,7 +114,7 @@ class OCP_RNEA(OCP):
         self.opti.subject_to(dv_next == dv + a * dt)
 
         # RNEA constraint
-        tau_rnea = self.dyn.tau_dynamics(self.arm_id)(q, v, a, forces)
+        tau_rnea = self.dyn.tau_dynamics(self.ext_force_frame)(q, v, a, forces)
         self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
 
         # Torque constraints
@@ -262,13 +262,13 @@ class OCP_RNEA(OCP):
         tau_j = u[self.tau_idx:]
         dt_sim = self.opti.value(self.dt_min)  # the first step size
 
-        ee_ids = self.feet_ids.copy()
-        if self.arm_id:
-            ee_ids.append(self.arm_id)
+        ee_frames = self.foot_frames.copy()
+        if self.arm_ee_frame:
+            ee_frames.append(self.arm_ee_frame)
 
         pin.framesForwardKinematics(self.model, self.data, q)
         f_ext = [pin.Force(np.zeros(6)) for _ in range(self.model.njoints)]
-        for idx, frame_id in enumerate(ee_ids):
+        for idx, frame_id in enumerate(ee_frames):
             joint_id = self.model.frames[frame_id].parentJoint
             translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation
             rotation_world_to_joint_frame = self.data.oMi[joint_id].rotation.T

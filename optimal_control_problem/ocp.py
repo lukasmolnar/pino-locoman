@@ -14,9 +14,10 @@ class OCP:
         self.model = robot.model
         self.data = robot.data
         self.gait_sequence = robot.gait_sequence
-        self.feet_ids = robot.feet_ids
-        self.arm_id = robot.arm_id
-        self.n_feet = len(self.feet_ids)
+        self.foot_frames = robot.foot_frames
+        self.ext_force_frame = robot.ext_force_frame
+        self.arm_ee_frame = robot.arm_ee_frame
+        self.n_feet = len(self.foot_frames)
 
         self.nq = robot.nq
         self.nv = robot.nv
@@ -57,7 +58,7 @@ class OCP:
         self.R_diag = self.opti.parameter(self.nu_opt[0])  # input weights
 
         self.base_vel_des = self.opti.parameter(6)  # linear + angular velocity
-        self.arm_f_des = self.opti.parameter(3)  # force at end-effector
+        self.ext_force_des = self.opti.parameter(3)  # force at end-effector
         self.arm_vel_des = self.opti.parameter(3)  # linear velocity at end-effector
 
         # Increasing time step sizes
@@ -110,7 +111,7 @@ class OCP:
             self.setup_dynamics_constraints(i)
 
             # Contact and swing constraints
-            for idx, frame_id in enumerate(self.feet_ids):
+            for idx, frame_id in enumerate(self.foot_frames):
                 f_e = forces[idx * 3 : (idx + 1) * 3]
 
                 # Get contact and swing info
@@ -154,10 +155,10 @@ class OCP:
             u_warm = self.opti.value(self.u_des)[:self.nu_opt[i]]
             self.opti.set_initial(self.U_opt[i], u_warm)
 
-            # Arm force task
-            if self.arm_id:
+            # External force
+            if self.ext_force_frame:
                 f_e = forces[3*self.n_feet:]
-                self.opti.subject_to(f_e == self.arm_f_des)
+                self.opti.subject_to(f_e == self.ext_force_des)
 
             if i == 0 and type(self.dyn) != DynamicsCentroidalVel:
                 # First step: No state constraints
@@ -165,8 +166,8 @@ class OCP:
                 continue
 
             # Arm velocity task
-            if self.arm_id:
-                vel = self.dyn.get_frame_velocity(self.arm_id, relative_to_base=True)(q, v)
+            if self.arm_ee_frame:
+                vel = self.dyn.get_frame_velocity(self.arm_ee_frame, relative_to_base=False)(q, v)
                 vel_lin = vel[:3]
                 vel_diff = vel_lin - self.arm_vel_des
                 self.opti.subject_to(vel_diff == [0] * 3)
@@ -209,10 +210,11 @@ class OCP:
         self.opti.set_value(self.swing_height, swing_height)
         self.opti.set_value(self.swing_vel_limits, swing_vel_limits)
 
-    def set_tracking_target(self, base_vel_des, arm_f_des, arm_vel_des):
+    def set_tracking_targets(self, base_vel_des, ext_force_des=None, arm_vel_des=None):
         self.opti.set_value(self.base_vel_des, base_vel_des)
-        if self.arm_id:
-            self.opti.set_value(self.arm_f_des, arm_f_des)
+        if self.ext_force_frame:
+            self.opti.set_value(self.ext_force_des, ext_force_des)
+        if self.arm_ee_frame:
             self.opti.set_value(self.arm_vel_des, arm_vel_des)
 
     def set_weights(self, Q_diag, R_diag):
@@ -259,8 +261,10 @@ class OCP:
             self.solver_params = [self.x_init, self.dt_min, self.dt_max, self.contact_schedule, self.swing_schedule,
                                   self.n_contacts, self.swing_period, self.swing_height, self.swing_vel_limits,
                                   self.Q_diag, self.R_diag, self.base_vel_des]
-            if self.arm_id:
-                self.solver_params += [self.arm_f_des, self.arm_vel_des]
+            if self.ext_force_frame:
+                self.solver_params += [self.ext_force_des]
+            if self.arm_ee_frame:
+                self.solver_params += [self.arm_vel_des]
             if warm_start:
                 self.solver_params += [self.opti.x]
 

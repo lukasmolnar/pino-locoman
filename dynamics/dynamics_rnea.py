@@ -5,8 +5,8 @@ from .dynamics import Dynamics
 
 
 class DynamicsRNEA(Dynamics):
-    def __init__(self, model, mass, feet_ids):
-        super().__init__(model, mass, feet_ids)
+    def __init__(self, model, mass, foot_frames):
+        super().__init__(model, mass, foot_frames)
 
     def state_integrate(self):
         x = ca.SX.sym("x", self.nq + self.nv)
@@ -39,22 +39,22 @@ class DynamicsRNEA(Dynamics):
 
         return ca.Function("difference", [x0, x1], [dx], ["x0", "x1"], ["dx"])
 
-    def tau_dynamics(self, arm_id=None):
+    def tau_dynamics(self, ext_force_frame=None):
         # Generalized coordinates
         q = ca.SX.sym("q", self.nq)  # positions
         v = ca.SX.sym("v", self.nv)  # velocities
         a = ca.SX.sym("a", self.nv)  # accelerations
 
         # End-effector forces
-        ee_ids = self.feet_ids.copy()
-        if arm_id:
-            ee_ids.append(arm_id)
-        forces = ca.SX.sym("forces", 3 * len(ee_ids))
+        ee_frames = self.foot_frames.copy()
+        if ext_force_frame:
+            ee_frames.append(ext_force_frame)
+        forces = ca.SX.sym("forces", 3 * len(ee_frames))
 
         # RNEA
         cpin.framesForwardKinematics(self.model, self.data, q)
         f_ext = [cpin.Force(ca.SX.zeros(6)) for _ in range(self.model.njoints)]
-        for idx, frame_id in enumerate(ee_ids):
+        for idx, frame_id in enumerate(ee_frames):
             # TODO: Check this. it is from OCS2.
             joint_id = self.model.frames[frame_id].parentJoint
             translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation

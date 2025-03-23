@@ -6,7 +6,7 @@ from utils.helpers import *
 from optimal_control_problem import OCP_RNEA
 
 # Problem parameters
-robot = B2(dynamics="rnea", reference_pose="standing")
+robot = B2(dynamics="rnea", reference_pose="standing", payload=False)
 # robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.8
@@ -15,9 +15,9 @@ tau_nodes = 3  # remove torques afterwards
 dt_min = 0.01  # used for simulation
 dt_max = 0.08
 
-# Tracking target: Base velocity (and arm task for B2G)
+# Tracking targets
 base_vel_des = np.array([0.2, 0, 0, 0, 0, 0])  # linear + angular
-arm_f_des = np.array([0, 0, 0])
+ext_force_des = np.array([0, 0, 0])
 arm_vel_des = np.array([0, 0, 0])
 
 # Swing params
@@ -49,7 +49,7 @@ def main():
     ocp.setup_problem()
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
-    ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)
+    ocp.set_tracking_targets(base_vel_des, ext_force_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag, robot.W_diag)
 
     x_init = robot.x_init
@@ -72,8 +72,11 @@ def main():
 
         params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
                   swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
-        if ocp.arm_id:
-            params += [arm_f_des, arm_vel_des]
+
+        if ocp.ext_force_frame:
+            params += [ext_force_des]
+        if ocp.arm_ee_frame:
+            params += [arm_vel_des]
 
         # RNEA params
         params += [tau_prev, robot.W_diag]
@@ -101,14 +104,14 @@ def main():
             print("v: ", v.T)
             print("tau: ", tau.T)
 
-            ee_ids = ocp.feet_ids
-            if ocp.arm_id:
-                ee_ids.append(ocp.arm_id)
+            ee_frames = ocp.foot_frames.copy()
+            if ocp.ext_force_frame:
+                ee_frames.append(ocp.ext_force_frame)
 
             # RNEA
             pin.framesForwardKinematics(model, data, q)
             f_ext = [pin.Force(np.zeros(6)) for _ in range(model.njoints)]
-            for idx, frame_id in enumerate(ee_ids):
+            for idx, frame_id in enumerate(ee_frames):
                 joint_id = model.frames[frame_id].parentJoint
                 translation_joint_to_contact_frame = model.frames[frame_id].placement.translation
                 rotation_world_to_joint_frame = data.oMi[joint_id].rotation.T

@@ -6,8 +6,8 @@ from .dynamics import Dynamics
 
 
 class DynamicsCentroidalAcc(Dynamics):
-    def __init__(self, model, mass, feet_ids):
-        super().__init__(model, mass, feet_ids)
+    def __init__(self, model, mass, foot_frames):
+        super().__init__(model, mass, foot_frames)
 
     def state_integrate(self):
         x = ca.SX.sym("x", self.nq + self.nv)
@@ -40,14 +40,14 @@ class DynamicsCentroidalAcc(Dynamics):
 
         return ca.Function("difference", [x0, x1], [dx], ["x0", "x1"], ["dx"])
 
-    def base_acceleration_dynamics(self, arm_id=None):
+    def base_acceleration_dynamics(self, ext_force_frame=None):
         q = ca.SX.sym("q", self.nq)  # positions
         v = ca.SX.sym("v", self.nv)  # velocities
         a_j = ca.SX.sym("a_j", self.nj)  # joint accelerations
 
         # End-effector forces
-        nf = len(self.feet_ids)
-        if arm_id:
+        nf = len(self.foot_frames)
+        if ext_force_frame:
             nf += 1
         f_e = [ca.SX.sym(f"f_e_{i}", 3) for i in range(nf)]
         forces = ca.vertcat(*f_e)
@@ -63,11 +63,11 @@ class DynamicsCentroidalAcc(Dynamics):
         g = np.array([0, 0, -9.81 * self.mass])
         dp_com = sum(f_e) + g
         dl_com = ca.SX.zeros(3)
-        for idx, frame_id in enumerate(self.feet_ids):
+        for idx, frame_id in enumerate(self.foot_frames):
             r_ee = self.data.oMf[frame_id].translation - r_com
             dl_com += ca.cross(r_ee, f_e[idx])
-        if arm_id:
-            r_ee = self.data.oMf[arm_id].translation - r_com
+        if ext_force_frame:
+            r_ee = self.data.oMf[ext_force_frame].translation - r_com
             dl_com += ca.cross(r_ee, f_e[-1])
 
         dh = ca.vertcat(dp_com, dl_com)

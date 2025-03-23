@@ -8,13 +8,13 @@ class Dynamics:
             self,
             model,
             mass,
-            feet_ids,
+            foot_frames,
         ):
         self.model = cpin.Model(model)
         self.data = self.model.createData()
         self.mass = mass
-        self.feet_ids = feet_ids
-        self.base_id = self.model.getFrameId("base_link")
+        self.foot_frames = foot_frames
+        self.base_frame = self.model.getFrameId("base_link")
 
         self.nq = self.model.nq
         self.nv = self.model.nv
@@ -51,11 +51,11 @@ class Dynamics:
         if relative_to_base:
             # Compute frame velocity relative to the base frame
             cpin.framesForwardKinematics(self.model, self.data, q)
-            base_vel = cpin.getFrameVelocity(self.model, self.data, self.base_id, ref).vector
-            base_rot = self.data.oMf[self.base_id].rotation
+            base_vel = cpin.getFrameVelocity(self.model, self.data, self.base_frame, ref).vector
+            base_rot = self.data.oMf[self.base_frame].rotation
 
             frame_pos_world = self.data.oMf[frame_id].translation
-            base_pos_world = self.data.oMf[self.base_id].translation
+            base_pos_world = self.data.oMf[self.base_frame].translation
             rel_pos_world = frame_pos_world - base_pos_world
 
             # Linear velocity correction due to base angular velocity

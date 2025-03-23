@@ -6,8 +6,8 @@ from .dynamics import Dynamics
 
 
 class DynamicsCentroidalVel(Dynamics):
-    def __init__(self, model, mass, feet_ids):
-        super().__init__(model, mass, feet_ids)
+    def __init__(self, model, mass, foot_frames):
+        super().__init__(model, mass, foot_frames)
 
     def state_integrate(self):
         x = ca.SX.sym("x", 6 + self.nq)
@@ -40,7 +40,7 @@ class DynamicsCentroidalVel(Dynamics):
 
         return ca.Function("difference", [x0, x1], [dx], ["x0", "x1"], ["dx"])
 
-    def dynamics(self, arm_id=None):
+    def dynamics(self, ext_force_frame=None):
         # States
         p_com = ca.SX.sym("p_com", 3)  # COM linear momentum
         l_com = ca.SX.sym("l_com", 3)  # COM angular momentum
@@ -48,8 +48,8 @@ class DynamicsCentroidalVel(Dynamics):
         q = ca.SX.sym("q", self.nq)  # generalized coordinates (base + joints)
 
         # Inputs
-        nf = len(self.feet_ids)
-        if arm_id:
+        nf = len(self.foot_frames)
+        if ext_force_frame:
             nf += 1
         f_e = [ca.SX.sym(f"f_e_{i}", 3) for i in range(nf)]  # end-effector forces
         dq_j = ca.SX.sym("dq_j", self.nj)  # joint velocities
@@ -67,11 +67,11 @@ class DynamicsCentroidalVel(Dynamics):
         g = np.array([0, 0, -9.81 * self.mass])
         dp_com = sum(f_e) + g
         dl_com = ca.SX.zeros(3)
-        for idx, frame_id in enumerate(self.feet_ids):
+        for idx, frame_id in enumerate(self.foot_frames):
             r_ee = self.data.oMf[frame_id].translation - self.data.com[0]
             dl_com += ca.cross(r_ee, f_e[idx])
-        if arm_id:
-            r_ee = self.data.oMf[arm_id].translation - self.data.com[0]
+        if ext_force_frame:
+            r_ee = self.data.oMf[ext_force_frame].translation - self.data.com[0]
             dl_com += ca.cross(r_ee, f_e[-1])
 
         h = ca.vertcat(p_com, l_com)

@@ -10,7 +10,7 @@ class OCPCentroidalVel(OCP):
     def __init__(self, robot, nodes):
         super().__init__(robot, nodes)
 
-        self.dyn = DynamicsCentroidalVel(self.model, self.mass, self.feet_ids)
+        self.dyn = DynamicsCentroidalVel(self.model, self.mass, self.foot_frames)
 
         # Store solutions
         self.hs = []
@@ -38,10 +38,16 @@ class OCPCentroidalVel(OCP):
         x_des = ca.vertcat(self.base_vel_des, self.robot.q0)  # CoM target + nominal configuration
         self.dx_des = self.dyn.state_difference()(self.x_init, x_des)
 
-        # Desired input: Use this for warm starting
-        self.f_des = ca.repmat(ca.vertcat(0, 0, 9.81 * self.mass / self.n_contacts), self.n_feet, 1)  # gravity compensation
-        if self.arm_id:
+        # Desired forces, TODO: customize weight distribution
+        f_gravity = 9.81 * self.mass
+        f_front = ca.repmat(ca.vertcat(0, 0, 0.8 * f_gravity / self.n_contacts), 2, 1)
+        f_rear = ca.repmat(ca.vertcat(0, 0, 1.2 * f_gravity / self.n_contacts), 2, 1)
+        self.f_des = ca.vertcat(f_front, f_rear)
+        # self.f_des = ca.repmat(ca.vertcat(0, 0, f_gravity / self.n_contacts), self.n_feet, 1)
+        if self.ext_force_frame:
             self.f_des = ca.vertcat(self.f_des, [0] * 3)  # zero force at end-effector
+
+        # Desired input (use this for warm starting)
         self.u_des = ca.vertcat(self.f_des, [0] * self.nj)  # zero joint vel
 
     def setup_dynamics_constraints(self, i):
@@ -56,7 +62,7 @@ class OCPCentroidalVel(OCP):
 
         # Dynamics constraint
         dx_next = self.DX_opt[i+1]
-        dx_dyn = self.dyn.dynamics(self.arm_id)(x, u, dq_b)
+        dx_dyn = self.dyn.dynamics(self.ext_force_frame)(x, u, dq_b)
         self.opti.subject_to(dx_next == dx + dx_dyn * self.dts[i])
 
     def get_h(self, i):
