@@ -2,26 +2,26 @@ import time
 import numpy as np
 import pinocchio as pin
 
-from helpers import *
-from ocp_rnea import OCP_RNEA
+from utils.helpers import *
+from optimal_control_problem import OCP_RNEA
 
 # Problem parameters
-# robot = Go2(dynamics="rnea", reference_pose="standing")
-robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
+robot = B2(dynamics="rnea", reference_pose="standing", payload=False)
+# robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_period = 0.5
-nodes = 12
-tau_nodes = 2  # remove torques afterwards
-dt_min = 0.02  # used for simulation
-dt_max = 0.05
+gait_period = 0.8
+nodes = 14
+tau_nodes = 3  # remove torques afterwards
+dt_min = 0.01  # used for simulation
+dt_max = 0.08
 
-# Tracking target: Base velocity (and arm task for B2G)
-base_vel_des = np.array([0.3, 0, 0, 0, 0, 0])  # linear + angular
-arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.3, 0.3, 0])
+# Tracking targets
+base_vel_des = np.array([0.2, 0, 0, 0, 0, 0])  # linear + angular
+ext_force_des = np.array([0, 0, 0])
+arm_vel_des = np.array([0, 0, 0])
 
 # Swing params
-swing_height = 0.1
+swing_height = 0.07
 swing_vel_limits = [0.1, -0.2]
 
 # Solver
@@ -33,8 +33,6 @@ debug = False  # print info
 
 def main():
     robot.set_gait_sequence(gait_type, gait_period)
-    if type(robot) == B2G and not robot.ignore_arm:
-        robot.add_arm_task(arm_f_des, arm_vel_des)
     robot.initialize_weights()
 
     robot_instance = robot.robot
@@ -48,38 +46,47 @@ def main():
 
     # Setup OCP
     ocp = OCP_RNEA(robot, nodes, tau_nodes)
+    ocp.setup_problem()
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
-    ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)
+    ocp.set_tracking_targets(base_vel_des, ext_force_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag, robot.W_diag)
 
-    x_init = np.concatenate((q0, np.zeros(model.nv)))
+    x_init = robot.x_init
     tau_prev = np.zeros(robot.nj)
     t_current = 0
 
     ocp.update_initial_state(x_init)
     ocp.update_previous_torques(tau_prev)
     ocp.update_gait_sequence(t_current)
-    ocp.init_solver(solver, compile_solver, warm_start=False)
+    ocp.init_solver(solver, warm_start=False)
 
     if solver == "fatrop" and compile_solver:
+        ocp.compile_solver()
+
         # Evaluate solver function that was compiled
         contact_schedule = ocp.opti.value(ocp.contact_schedule)
         swing_schedule = ocp.opti.value(ocp.swing_schedule)
         n_contacts = ocp.opti.value(ocp.n_contacts)
         swing_period = ocp.opti.value(ocp.swing_period)
 
-        params = [x_init, tau_prev, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
-                  swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, robot.W_diag, base_vel_des]
-        if ocp.arm_ee_id:
-            params += [arm_f_des, arm_vel_des]
+        params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
+                  swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
+
+        if ocp.ext_force_frame:
+            params += [ext_force_des]
+        if ocp.arm_ee_frame:
+            params += [arm_vel_des]
+
+        # RNEA params
+        params += [tau_prev, robot.W_diag]
 
         start_time = time.time()
         sol_x = ocp.solver_function(*params)
         end_time = time.time()
         ocp.solve_time = end_time - start_time
 
-        ocp._retract_stacked_sol(sol_x, retract_all=True)
+        ocp.retract_stacked_sol(sol_x, retract_all=True)
     else:
         ocp.solve(retract_all=True)
 
@@ -97,10 +104,14 @@ def main():
             print("v: ", v.T)
             print("tau: ", tau.T)
 
+            ee_frames = ocp.foot_frames.copy()
+            if ocp.ext_force_frame:
+                ee_frames.append(ocp.ext_force_frame)
+
             # RNEA
             pin.framesForwardKinematics(model, data, q)
             f_ext = [pin.Force(np.zeros(6)) for _ in range(model.njoints)]
-            for idx, frame_id in enumerate(robot.ee_ids):
+            for idx, frame_id in enumerate(ee_frames):
                 joint_id = model.frames[frame_id].parentJoint
                 translation_joint_to_contact_frame = model.frames[frame_id].placement.translation
                 rotation_world_to_joint_frame = data.oMi[joint_id].rotation.T

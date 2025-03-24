@@ -3,29 +3,30 @@ import numpy as np
 import pinocchio as pin
 import casadi as ca
 
-from helpers import *
-from ocp_centroidal import OCP_Centroidal
+from utils.helpers import *
+from optimal_control_problem import OCPCentroidalVel, OCPCentroidalAcc
 
 # Problem parameters
-# robot = B2(dynamics="centroidal", reference_pose="standing")
-robot = B2G(dynamics="centroidal", reference_pose="standing_with_arm_up", ignore_arm=False)
+robot = B2(dynamics="centroidal_acc", reference_pose="standing")
+# robot = B2G(dynamics="centroidal_acc", reference_pose="standing_with_arm_up", ignore_arm=False)
+ocp_class = OCPCentroidalAcc
 gait_type = "trot"
 gait_period = 0.5
 nodes = 10
 dt_min = 0.02  # used for simulation
 dt_max = 0.05
 
-# Tracking target: Base velocity (and arm task for B2G)
-base_vel_des = np.array([0.3, 0, 0, 0, 0, 0])  # linear + angular
-arm_f_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.3, 0.3, 0])
+# Tracking targets
+base_vel_des = np.array([0.2, 0, 0, 0, 0, 0])  # linear + angular
+ext_force_des = np.array([0, 0, 0])
+arm_vel_des = np.array([0, 0, 0])
 
 # Swing params
 swing_height = 0.07
 swing_vel_limits = [0.1, -0.2]
 
 # MPC
-mpc_loops = 50
+mpc_loops = 100
 
 # Solver
 solver = "fatrop"
@@ -37,8 +38,7 @@ load_compiled_solver = None
 debug = False  # print info
 
 
-def mpc_loop(ocp, robot_instance, q0, N):
-    x_init = np.concatenate((np.zeros(6), q0))
+def mpc_loop(ocp, robot_instance, x_init, N):
     solve_times = []
 
     if solver == "fatrop" and compile_solver:
@@ -46,8 +46,9 @@ def mpc_loop(ocp, robot_instance, q0, N):
             # Load solver
             solver_function = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
         else:
-            # Initialize solver
-            ocp.init_solver(solver=solver, compile_solver=compile_solver, warm_start=warm_start)
+            # Initialize solver and compile it
+            ocp.init_solver(solver, warm_start)
+            ocp.compile_solver()
             solver_function = ocp.solver_function
 
         for k in range(N):
@@ -63,8 +64,10 @@ def mpc_loop(ocp, robot_instance, q0, N):
             params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
                       swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
 
-            if ocp.arm_ee_id:
-                params += [arm_f_des, arm_vel_des]
+            if ocp.ext_force_frame:
+                params += [ext_force_des]
+            if ocp.arm_ee_frame:
+                params += [arm_vel_des]
             if warm_start:
                 ocp.warm_start()
                 x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
@@ -80,7 +83,7 @@ def mpc_loop(ocp, robot_instance, q0, N):
             print("Solve time (ms): ", sol_time * 1000)
 
             # Retract solution and update x_init
-            ocp._retract_stacked_sol(sol_x, retract_all=False)
+            ocp.retract_stacked_sol(sol_x, retract_all=False)
             x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])  # TODO: simulate step
 
             robot_instance.display(ocp.qs[-1])  # Display last q
@@ -110,8 +113,6 @@ def mpc_loop(ocp, robot_instance, q0, N):
 
 def main():
     robot.set_gait_sequence(gait_type, gait_period)
-    if type(robot) == B2G and not robot.ignore_arm:
-        robot.add_arm_task(arm_f_des, arm_vel_des)
     robot.initialize_weights()
 
     robot_instance = robot.robot
@@ -128,12 +129,15 @@ def main():
     robot_instance.display(q0)
 
     # Setup OCP
-    ocp = OCP_Centroidal(robot, nodes)
+    ocp = ocp_class(robot, nodes)
+    ocp.setup_problem()
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
-    ocp.set_tracking_target(base_vel_des, arm_f_des, arm_vel_des)
+    ocp.set_tracking_targets(base_vel_des, ext_force_des, arm_vel_des)
     ocp.set_weights(robot.Q_diag, robot.R_diag)
-    ocp = mpc_loop(ocp, robot_instance, q0, mpc_loops)
+
+    x_init = robot.x_init
+    ocp = mpc_loop(ocp, robot_instance, x_init, mpc_loops)
 
     if debug:
         for k in range(len(ocp.qs)):
