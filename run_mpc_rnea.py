@@ -8,8 +8,8 @@ from utils.helpers import *
 from optimal_control_problem import OCP_RNEA
 
 # Problem parameters
-robot = B2(dynamics="rnea", reference_pose="standing", payload=False)
-# robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_forward", ignore_arm=True)
+robot = B2(dynamics="rnea", reference_pose="standing", payload="front")
+# robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_forward", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.8
 nodes = 14
@@ -34,7 +34,7 @@ solver = "fatrop"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_b2_forces_payload_N14_tau3.so"
+# load_compiled_solver = "libsolver_b2g_globz_N14_tau3.so"
 
 debug = False  # print info
 plot = True

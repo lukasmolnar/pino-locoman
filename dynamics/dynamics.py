@@ -69,7 +69,13 @@ class Dynamics:
             rel_lin_vel_base = base_rot.T @ rel_lin_vel_world
             rel_ang_vel_base = base_rot.T @ rel_ang_vel_world
 
-            vel = ca.vertcat(rel_lin_vel_base, rel_ang_vel_base)
+            # Keep z-components in global frame!
+            vel = ca.vertcat(
+                rel_lin_vel_base[:2],
+                frame_vel[2],
+                rel_ang_vel_base[:2],
+                frame_vel[5]
+            )
 
         else:
             vel = frame_vel

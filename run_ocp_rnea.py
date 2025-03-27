@@ -6,7 +6,7 @@ from utils.helpers import *
 from optimal_control_problem import OCP_RNEA
 
 # Problem parameters
-robot = B2(dynamics="rnea", reference_pose="standing", payload=False)
+robot = B2(dynamics="rnea", reference_pose="standing", payload="front")
 # robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.8

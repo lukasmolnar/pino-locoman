@@ -136,7 +136,7 @@ class Robot:
 
 
 class B2(Robot):
-    def __init__(self, dynamics, reference_pose="standing", payload=False):
+    def __init__(self, dynamics, reference_pose="standing", payload=None):
         urdf_path = "robots/b2_description/urdf/b2.urdf"
         srdf_path = "robots/b2_description/srdf/b2.srdf"
         super().__init__(urdf_path, srdf_path, dynamics, reference_pose)
@@ -147,9 +147,12 @@ class B2(Robot):
         self.joint_vel_max = np.tile([23.0, 23.0, 14.0], 4)
         self.joint_torque_max = np.tile([200, 200, 320], 4)
 
-        if payload:
-            # External force as payload on base
-            self.ext_force_frame = self.model.getFrameId("base_payload", type=pin.FIXED_JOINT)
+        # External force as payload on base
+        if payload == "front":
+            self.ext_force_frame = self.model.getFrameId("payload_joint_front", type=pin.FIXED_JOINT)
+            self.nf += 3
+        elif payload == "rear":
+            self.ext_force_frame = self.model.getFrameId("payload_joint_rear", type=pin.FIXED_JOINT)
             self.nf += 3
 
 

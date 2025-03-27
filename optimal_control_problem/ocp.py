@@ -167,7 +167,7 @@ class OCP:
 
             # Arm velocity task
             if self.arm_ee_frame:
-                vel = self.dyn.get_frame_velocity(self.arm_ee_frame, relative_to_base=False)(q, v)
+                vel = self.dyn.get_frame_velocity(self.arm_ee_frame, relative_to_base=True)(q, v)
                 vel_lin = vel[:3]
                 vel_diff = vel_lin - self.arm_vel_des
                 self.opti.subject_to(vel_diff == [0] * 3)
