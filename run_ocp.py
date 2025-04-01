@@ -1,15 +1,15 @@
 import time
 import numpy as np
 import pinocchio as pin
-import casadi as ca
 
 from utils.helpers import *
-from optimal_control_problem import *
+from optimization import *
 
 # Problem parameters
-robot = B2(dynamics="whole_body_acc", reference_pose="standing")
-# robot = B2G(dynamics="centroidal_acc", reference_pose="standing_with_arm_up", ignore_arm=False)
 ocp_class = OCPWholeBodyAcc
+dynamics = "whole_body_acc"
+robot = B2(dynamics, reference_pose="standing")
+# robot = B2G(dynamics, reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.5
 nodes = 10
