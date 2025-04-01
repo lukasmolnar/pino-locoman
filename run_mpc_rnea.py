@@ -5,11 +5,12 @@ import casadi as ca
 import matplotlib.pyplot as plt
 
 from utils.helpers import *
-from optimal_control_problem import OCP_RNEA
+from optimization import OCP_RNEA
 
 # Problem parameters
-robot = B2(dynamics="rnea", reference_pose="standing", payload="front")
-# robot = B2G(dynamics="rnea", reference_pose="standing_with_arm_forward", ignore_arm=False)
+dynamics = "rnea"
+robot = B2(dynamics, reference_pose="standing", payload="front")
+# robot = B2G(dynamics, reference_pose="standing_with_arm_forward", ignore_arm=False)
 gait_type = "trot"
 gait_period = 0.8
 nodes = 14
