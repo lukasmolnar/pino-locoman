@@ -40,7 +40,7 @@ class Robot:
             # COM linear/angular momentum + generalized coordinates
             self.x_init = np.concatenate((np.zeros(6), self.q0))
 
-        elif self.dynamics == "centroidal_acc" or self.dynamics == "rnea": 
+        elif self.dynamics in ["centroidal_acc", "whole_body_acc", "rnea"]: 
             # Generalized coordinates + velocities
             self.x_init = np.concatenate((self.q0, np.zeros(self.nv)))
 
@@ -73,7 +73,7 @@ class Robot:
                 [1e-1] * self.nj,  # joint vel
             ))
 
-        elif self.dynamics == "centroidal_acc":
+        elif self.dynamics in ["centroidal_acc", "whole_body_acc"]:
             Q_base_pos_diag = np.concatenate((
                 [0] * 2,  # base x/y
                 [10000],  # base z

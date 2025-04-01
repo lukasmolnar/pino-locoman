@@ -4,20 +4,20 @@ import pinocchio as pin
 import casadi as ca
 
 from utils.helpers import *
-from optimal_control_problem import OCPCentroidalVel, OCPCentroidalAcc
+from optimal_control_problem import *
 
 # Problem parameters
-robot = B2(dynamics="centroidal_acc", reference_pose="standing")
+robot = B2(dynamics="whole_body_acc", reference_pose="standing", payload=None)
 # robot = B2G(dynamics="centroidal_acc", reference_pose="standing_with_arm_up", ignore_arm=False)
-ocp_class = OCPCentroidalAcc
+ocp_class = OCPWholeBodyAcc
 gait_type = "trot"
-gait_period = 0.5
-nodes = 10
-dt_min = 0.02  # used for simulation
-dt_max = 0.05
+gait_period = 0.8
+nodes = 14
+dt_min = 0.01  # used for simulation
+dt_max = 0.08
 
 # Tracking targets
-base_vel_des = np.array([0.2, 0, 0, 0, 0, 0])  # linear + angular
+base_vel_des = np.array([0.2, 0, 0, 0, 0, 0.2])  # linear + angular
 ext_force_des = np.array([0, 0, 0])
 arm_vel_des = np.array([0, 0, 0])
 

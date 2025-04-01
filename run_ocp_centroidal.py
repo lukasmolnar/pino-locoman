@@ -4,12 +4,12 @@ import pinocchio as pin
 import casadi as ca
 
 from utils.helpers import *
-from optimal_control_problem import OCPCentroidalVel, OCPCentroidalAcc
+from optimal_control_problem import *
 
 # Problem parameters
-robot = B2(dynamics="centroidal_acc", reference_pose="standing")
+robot = B2(dynamics="whole_body_acc", reference_pose="standing")
 # robot = B2G(dynamics="centroidal_acc", reference_pose="standing_with_arm_up", ignore_arm=False)
-ocp_class = OCPCentroidalAcc
+ocp_class = OCPWholeBodyAcc
 gait_type = "trot"
 gait_period = 0.5
 nodes = 10
