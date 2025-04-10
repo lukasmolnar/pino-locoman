@@ -1,7 +1,6 @@
 import numpy as np
 import casadi as ca
 
-from utils.helpers import *
 from dynamics import DynamicsCentroidalAcc
 from .ocp import OCP
 
@@ -10,13 +9,47 @@ class OCPCentroidalAcc(OCP):
     def __init__(self, robot, nodes):
         super().__init__(robot, nodes)
 
+        # Dynamics
         self.dyn = DynamicsCentroidalAcc(self.model, self.mass, self.foot_frames)
 
+        # Nominal state
+        self.x_nom = np.concatenate((self.robot.q0, [0] * self.nv))  # joint pos + vel
+
         # Store solutions
-        self.qs = []
-        self.vs = []
-        self.accs = []
-        self.forces = []
+        self.q_sol = []
+        self.v_sol = []
+        self.aj_sol = []
+        self.forces_sol = []
+
+    def set_weights(self):
+        # State and input weights
+        Q_base_pos_diag = np.concatenate((
+            [0] * 2,      # base x/y
+            [1000],       # base z
+            [10000] * 2,  # base rot x/y
+            [0],          # base rot z
+        ))
+        Q_joint_pos_diag = np.tile([1000, 500, 500], 4)  # hip, thigh, calf
+
+        if self.arm_ee_frame:
+            Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
+
+        Q_vel_diag = np.concatenate((
+            [2000] * 2,     # base lin x/y
+            [1000],         # base lin z
+            [1000] * 2,     # base ang x/y
+            [2000],         # base ang z
+            [2] * self.nj,  # joint vel (all of them)
+        ))
+
+        Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
+        R_diag = np.concatenate((
+            [1e-3] * self.nj,  # joint acc
+            [1e-3] * self.nf,  # forces
+        ))
+
+        self.opti.set_value(self.Q_diag, Q_diag)
+        self.opti.set_value(self.R_diag, R_diag)
 
     def setup_variables(self):
         # State size
@@ -74,6 +107,9 @@ class OCPCentroidalAcc(OCP):
         self.opti.subject_to(dq_next == dq + v * dt)  # TODO: possibly consider acceleration
         self.opti.subject_to(dv_next == dv + a * dt)
 
+        # gaps = self.dyn.dynamics_gaps(self.ext_force_frame)(q, v, a, forces)
+        # self.opti.subject_to(gaps == [0] * 6)
+
     def get_q(self, i):
         dx = self.DX_opt[i]
         x = self.dyn.state_integrate()(self.x_init, dx)
@@ -120,10 +156,10 @@ class OCPCentroidalAcc(OCP):
 
         for dx_sol, u_sol in zip(self.DX_prev, self.U_prev):
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
-            self.qs.append(np.array(x_sol[:self.nq]))
-            self.vs.append(np.array(x_sol[self.nq:]))
-            self.accs.append(np.array(u_sol[:self.f_idx]))
-            self.forces.append(np.array(u_sol[self.f_idx:]))
+            self.q_sol.append(np.array(x_sol[:self.nq]))
+            self.v_sol.append(np.array(x_sol[self.nq:]))
+            self.aj_sol.append(np.array(u_sol[:self.f_idx]))
+            self.forces_sol.append(np.array(u_sol[self.f_idx:]))
 
             if not retract_all:
                 return
@@ -144,15 +180,15 @@ class OCPCentroidalAcc(OCP):
             self.U_prev.append(np.array(u_sol))
 
             if i == 0 or retract_all:
-                self.qs.append(np.array(x_sol[:self.nq]))
-                self.vs.append(np.array(x_sol[self.nq:]))
-                self.accs.append(np.array(u_sol[:self.f_idx]))
-                self.forces.append(np.array(u_sol[self.f_idx:]))
+                self.q_sol.append(np.array(x_sol[:self.nq]))
+                self.v_sol.append(np.array(x_sol[self.nq:]))
+                self.aj_sol.append(np.array(u_sol[:self.f_idx]))
+                self.forces_sol.append(np.array(u_sol[self.f_idx:]))
 
         dx_last = sol_x[self.nodes*nx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)
         self.DX_prev.append(np.array(dx_last))
 
         if retract_all:
-            self.qs.append(np.array(x_last[:self.nq]))
-            self.vs.append(np.array(x_last[self.nq:]))
+            self.q_sol.append(np.array(x_last[:self.nq]))
+            self.v_sol.append(np.array(x_last[self.nq:]))

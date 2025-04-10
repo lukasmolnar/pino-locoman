@@ -2,19 +2,18 @@ import time
 import numpy as np
 import pinocchio as pin
 
-from utils.helpers import *
-from optimization import *
+from utils.robot import *
+from optimization import make_ocp
 
-# Problem parameters
-ocp_class = OCPWholeBodyAcc
+# Parameters
+robot = B2(reference_pose="standing")
+# robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 dynamics = "whole_body_acc"
-robot = B2(dynamics, reference_pose="standing")
-# robot = B2G(dynamics, reference_pose="standing_with_arm_up", ignore_arm=False)
 gait_type = "trot"
-gait_period = 0.5
-nodes = 10
-dt_min = 0.02  # used for simulation
-dt_max = 0.06
+gait_period = 0.8
+nodes = 14
+dt_min = 0.01  # used for simulation
+dt_max = 0.08
 
 # Tracking targets
 base_vel_des = np.array([0.2, 0, 0, 0, 0, 0])  # linear + angular
@@ -29,13 +28,11 @@ swing_vel_limits = [0.1, -0.2]
 solver = "fatrop"
 compile_solver = True
 
-debug = False  # print info
+debug = True  # print info
 
 
 def main():
     robot.set_gait_sequence(gait_type, gait_period)
-    robot.initialize_weights()
-
     robot_instance = robot.robot
     model = robot.model
     data = robot.data
@@ -46,14 +43,12 @@ def main():
     pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
     # Setup OCP
-    ocp = ocp_class(robot, nodes)
-    ocp.setup_problem()
+    ocp = make_ocp(dynamics=dynamics, robot=robot, nodes=nodes)
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_tracking_targets(base_vel_des, ext_force_des, arm_vel_des)
-    ocp.set_weights(robot.Q_diag, robot.R_diag)
 
-    x_init = robot.x_init
+    x_init = ocp.x_nom
     t_current = 0
 
     ocp.update_initial_state(x_init)
@@ -68,9 +63,11 @@ def main():
         swing_schedule = ocp.opti.value(ocp.swing_schedule)
         n_contacts = ocp.opti.value(ocp.n_contacts)
         swing_period = ocp.opti.value(ocp.swing_period)
+        Q_diag = ocp.opti.value(ocp.Q_diag)
+        R_diag = ocp.opti.value(ocp.R_diag)
 
-        params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts, swing_period,
-                  swing_height, swing_vel_limits, robot.Q_diag, robot.R_diag, base_vel_des]
+        params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts,
+                  swing_period, swing_height, swing_vel_limits, Q_diag, R_diag, base_vel_des]
 
         if ocp.ext_force_frame:
             params += [ext_force_des]
@@ -89,51 +86,68 @@ def main():
     print("Solve time (ms):", ocp.solve_time * 1000)
 
     if debug:
+        print("************** DEBUG **************")
+        tau_diffs = []
+        tau_b_norms = []
+        tau_j_sol = []
         for k in range(nodes):
-            q = ocp.qs[k]
-            h = ocp.hs[k]
-            u = ocp.us[k]
+            q = ocp.q_sol[k].flatten()
+            v = ocp.v_sol[k].flatten()
+            a_j = ocp.aj_sol[k].flatten()
+            forces = ocp.forces_sol[k].flatten()
 
-            forces = u[:robot.nf]
-            v_j = u[robot.nf:]
-            v_b = ocp.dyn.get_base_velocity()(h, q, v_j)
-            v_b = np.array(v_b).flatten()
-            v = np.concatenate((v_b, v_j))
-            pin.computeAllTerms(model, data, q, v)
+            ee_frames = ocp.foot_frames.copy()
+            if ocp.ext_force_frame:
+                ee_frames.append(ocp.ext_force_frame)
 
-            print("k: ", k)
-            print("h: ", h.T)
-            print("q: ", q.T)
-            print("h true: ", data.hg / data.mass[0])
+            # Evaluate EOM
+            M = pin.crba(model, data, q)
+            nle = pin.nonLinearEffects(model, data, q, v)
+            tau_ext = np.zeros(M.shape[0])
+            for idx, frame_id in enumerate(ee_frames):
+                f_world = forces[idx * 3 : (idx + 1) * 3]
+                J_c = pin.computeFrameJacobian(model, data, q, frame_id, pin.LOCAL_WORLD_ALIGNED)
+                J_c_lin = J_c[:3, :]
+                tau_ext += J_c_lin.T @ f_world
+
+            # Compute base acceleration
+            M_bb = M[:6, :6]
+            M_bj = M[:6, 6:]
+            intermediate = -nle[:6] - M_bj @ a_j + tau_ext[:6]  # EOM for the base
+            a_b = np.linalg.inv(M_bb) @ intermediate
+            a = np.concatenate((a_b, a_j))
+            
+            tau_all = M @ a + nle - tau_ext
 
             # RNEA
-            if k < nodes - 1:
-                h_next = ocp.hs[k + 1]
-                q_next = ocp.qs[k + 1]
-                v_j_next = ocp.us[k + 1][robot.nf:]
-                v_b_next = ocp.dyn.get_base_velocity()(h_next, q_next, v_j_next)
-                v_b_next = np.array(v_b_next).flatten()
-                v_next = np.concatenate((v_b_next, v_j_next))
-            else:
-                break
-            a = (v_next - v) / dt_min
-
             pin.framesForwardKinematics(model, data, q)
             f_ext = [pin.Force(np.zeros(6)) for _ in range(model.njoints)]
-            for idx, frame_id in enumerate(robot.feet_ids):
+            for idx, frame_id in enumerate(ee_frames):
                 joint_id = model.frames[frame_id].parentJoint
                 translation_joint_to_contact_frame = model.frames[frame_id].placement.translation
                 rotation_world_to_joint_frame = data.oMi[joint_id].rotation.T
                 f_world = forces[idx * 3 : (idx + 1) * 3]
-                print(f"force {frame_id}: {f_world}")
 
                 f_lin = rotation_world_to_joint_frame @ f_world
                 f_ang = np.cross(translation_joint_to_contact_frame, f_lin)
                 f = np.concatenate((f_lin, f_ang))
                 f_ext[joint_id] = pin.Force(f)
 
+            # Both RNEA functions work!
             tau_rnea = pin.rnea(model, data, q, v, a, f_ext)
-            print("tau rnea: ", tau_rnea)
+            # tau_rnea = pin.rnea(model, data, q, v, a) - tau_ext
+
+            tau_diff = tau_all - tau_rnea
+            tau_b = tau_all[:6]
+            tau_j = tau_all[6:]
+            tau_diffs.append(np.linalg.norm(tau_diff))
+            tau_b_norms.append(np.linalg.norm(tau_b))
+            tau_j_sol.append(tau_j)
+
+        print("Avg tau_diff: ", np.mean(tau_diffs))
+        print("Std tau_diff: ", np.std(tau_diffs))
+        print("Avg tau_b_norm: ", np.mean(tau_b_norms))
+        print("Std tau_b_norm: ", np.std(tau_b_norms))
 
     T = sum([ocp.opti.value(dt) for dt in ocp.dts])
     print("Horizon length (s): ", T)
@@ -143,7 +157,7 @@ def main():
     robot_instance.loadViewerModel("pinocchio")
     for _ in range(50):
         for k in range(nodes):
-            q = ocp.qs[k]
+            q = ocp.q_sol[k]
             robot_instance.display(q)      
             dt = ocp.opti.value(ocp.dts[k])  
             time.sleep(dt)

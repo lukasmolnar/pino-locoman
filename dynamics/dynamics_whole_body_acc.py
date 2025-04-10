@@ -65,16 +65,22 @@ class DynamicsWholeBodyAcc(Dynamics):
             base_f_ext += J_f_base.T @ wrench
 
         # Base acceleration dynamics
-        M_bb_lin = M[:3, :3]
-        M_bb_ang = M[3:6, 3:6]
+        M_bb = M[:6, :6]
         M_bj = M[:6, 6:]
-        M_bb_lin_inv = ca.inv(M_bb_lin)
-        M_bb_ang_inv = ca.inv(M_bb_ang)
-
         intermediate = -nle[:6] - M_bj @ a_j + base_f_ext  # EOM for the base
-        a_b_lin = M_bb_lin_inv @ intermediate[:3]
-        a_b_ang = M_bb_ang_inv @ intermediate[3:]
 
-        a_b = ca.vertcat(a_b_lin, a_b_ang)
+        # NOTE: The following trick for computing M_bb_inv is from the original 1X implementation,
+        # but it only works if the base center is defined at the CoM (in general this is not the case).
+        # M_bb_lin = M_bb[:3, :3]
+        # M_bb_ang = M_bb[3:6, 3:6]
+        # M_bb_lin_inv = ca.inv(M_bb_lin)
+        # M_bb_ang_inv = ca.inv(M_bb_ang)
+        # a_b_lin = M_bb_lin_inv @ intermediate[:3]
+        # a_b_ang = M_bb_ang_inv @ intermediate[3:]
+        # a_b = ca.vertcat(a_b_lin, a_b_ang)
+
+        # General case
+        M_bb_inv = ca.inv(M_bb)
+        a_b = M_bb_inv @ intermediate
 
         return ca.Function("base_acc_dyn", [q, v, a_j, forces], [a_b], ["q", "v", "a_j", "forces"], ["tau_rnea"])
