@@ -115,7 +115,7 @@ class DynamicsCentroidalAcc(Dynamics):
         # Dynamics gaps
         gaps = A @ a + Adot @ v - dh
 
-        return ca.Function("dyn", [q, v, a, forces], [gaps], ["q", "v", "a", "forces"], ["a_b"])
+        return ca.Function("dyn_gaps", [q, v, a, forces], [gaps], ["q", "v", "a", "forces"], ["a_b"])
 
     def _compute_Ab_inv(self, Ab):
         # NOTE: This is the OCS2 implementation

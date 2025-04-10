@@ -11,6 +11,7 @@ from optimization import make_ocp
 robot = B2(reference_pose="standing", payload=None)
 # robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 dynamics ="whole_body_acc"
+include_base = True
 gait_type = "trot"
 gait_period = 0.8
 nodes = 14
@@ -135,7 +136,12 @@ def main():
     robot_instance.display(q0)
 
     # Setup OCP
-    ocp = make_ocp(dynamics=dynamics, robot=robot, nodes=nodes)
+    ocp = make_ocp(
+        dynamics=dynamics,
+        robot=robot,
+        nodes=nodes,
+        include_base=include_base
+    )
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_tracking_targets(base_vel_des, ext_force_des, arm_vel_des)
@@ -151,7 +157,7 @@ def main():
         for k in range(nodes):
             q = ocp.q_sol[k].flatten()
             v = ocp.v_sol[k].flatten()
-            a_j = ocp.aj_sol[k].flatten()
+            a = ocp.a_sol[k].flatten()
             forces = ocp.forces_sol[k].flatten()
 
             ee_frames = ocp.foot_frames.copy()
@@ -168,13 +174,6 @@ def main():
                 J_c_lin = J_c[:3, :]
                 tau_ext += J_c_lin.T @ f_world
 
-            # Compute base acceleration
-            M_bb = M[:6, :6]
-            M_bj = M[:6, 6:]
-            intermediate = -nle[:6] - M_bj @ a_j + tau_ext[:6]  # EOM for the base
-            a_b = np.linalg.inv(M_bb) @ intermediate
-            a = np.concatenate((a_b, a_j))
-            
             tau_all = M @ a + nle - tau_ext
 
             # RNEA

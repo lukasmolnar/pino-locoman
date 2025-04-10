@@ -54,20 +54,17 @@ class DynamicsWholeBodyAcc(Dynamics):
         # Pinocchio terms
         M = cpin.crba(self.model, self.data, q)  # Mass matrix
         nle = cpin.nonLinearEffects(self.model, self.data, q, v)  # Coriolis + gravity
-
-        base_f_ext = ca.SX.zeros(6)
+        tau_ext_base = ca.SX.zeros(6)
         for idx, frame_id in enumerate(ee_frames):
-            J_f = cpin.computeFrameJacobian(self.model, self.data, q, frame_id, pin.LOCAL_WORLD_ALIGNED)
-            J_f_base = J_f[:6, :6]
-
             f_world = forces[idx * 3 : (idx + 1) * 3]
-            wrench = ca.vertcat(f_world, ca.SX.zeros(3))  # No torque
-            base_f_ext += J_f_base.T @ wrench
+            J_c = cpin.computeFrameJacobian(self.model, self.data, q, frame_id, pin.LOCAL_WORLD_ALIGNED)
+            J_c_lin_base = J_c[:3, :6]
+            tau_ext_base += J_c_lin_base.T @ f_world
 
         # Base acceleration dynamics
         M_bb = M[:6, :6]
         M_bj = M[:6, 6:]
-        intermediate = -nle[:6] - M_bj @ a_j + base_f_ext  # EOM for the base
+        intermediate = -nle[:6] - M_bj @ a_j + tau_ext_base  # EOM for the base
 
         # NOTE: The following trick for computing M_bb_inv is from the original 1X implementation,
         # but it only works if the base center is defined at the CoM (in general this is not the case).
@@ -84,3 +81,30 @@ class DynamicsWholeBodyAcc(Dynamics):
         a_b = M_bb_inv @ intermediate
 
         return ca.Function("base_acc_dyn", [q, v, a_j, forces], [a_b], ["q", "v", "a_j", "forces"], ["tau_rnea"])
+
+    def dynamics_gaps(self, ext_force_frame=None):
+        q = ca.SX.sym("q", self.nq)  # positions
+        v = ca.SX.sym("v", self.nv)  # velocities
+        a = ca.SX.sym("a", self.nv)  # accelerations
+
+        # End-effector forces
+        ee_frames = self.foot_frames.copy()
+        if ext_force_frame:
+            ee_frames.append(ext_force_frame)
+        forces = ca.SX.sym("forces", 3 * len(ee_frames))
+
+        # Pinocchio terms
+        M = cpin.crba(self.model, self.data, q)  # Mass matrix
+        nle = cpin.nonLinearEffects(self.model, self.data, q, v)  # Coriolis + gravity
+        tau_ext_base = ca.SX.zeros(6)
+        for idx, frame_id in enumerate(ee_frames):
+            f_world = forces[idx * 3 : (idx + 1) * 3]
+            J_c = cpin.computeFrameJacobian(self.model, self.data, q, frame_id, pin.LOCAL_WORLD_ALIGNED)
+            J_c_lin_base = J_c[:3, :6]
+            tau_ext_base += J_c_lin_base.T @ f_world
+
+        # Dynamics gaps
+        M_b = M[:6, :]
+        gaps = M_b @ a + nle[:6] - tau_ext_base
+
+        return ca.Function("dyn_gaps", [q, v, a, forces], [gaps], ["q", "v", "a", "forces"], ["gaps"])
