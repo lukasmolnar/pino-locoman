@@ -1,7 +1,6 @@
 import numpy as np
 import casadi as ca
 
-from utils.helpers import *
 from dynamics import DynamicsCentroidalVel
 from .ocp import OCP
 
@@ -10,12 +9,42 @@ class OCPCentroidalVel(OCP):
     def __init__(self, robot, nodes):
         super().__init__(robot, nodes)
 
+        # Dynamics
         self.dyn = DynamicsCentroidalVel(self.model, self.mass, self.foot_frames)
 
+        # Nominal state
+        self.x_nom = np.concatenate(([0] * 6, self.robot.q0))  # CoM + joint pos
+
         # Store solutions
-        self.hs = []
-        self.qs = []
-        self.us = []
+        self.h_sol = []
+        self.q_sol = []
+        self.u_sol = []
+
+    def set_weights(self):
+        # State and input weights
+        Q_com_diag = np.concatenate((
+            [1000] * 3,   # CoM lin momentum
+            [1000] * 3,   # CoM ang momentum
+        ))
+        Q_base_pos_diag = np.concatenate((
+            [0] * 2,      # base x/y
+            [1000],       # base z
+            [10000] * 2,  # base rot x/y
+            [0],          # base rot z
+        ))
+        Q_joint_pos_diag = np.tile([100, 100, 100], 4)  # hip, thigh, calf
+
+        if self.arm_ee_frame:
+            Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [10] * 6))  # arm
+
+        Q_diag = np.concatenate((Q_com_diag, Q_base_pos_diag, Q_joint_pos_diag))
+        R_diag = np.concatenate((
+            [1e-3] * self.nf,  # forces
+            [1e-1] * self.nj,  # joint vel
+        ))
+
+        self.opti.set_value(self.Q_diag, Q_diag)
+        self.opti.set_value(self.R_diag, R_diag)
 
     def setup_variables(self):
         # State size
@@ -120,9 +149,9 @@ class OCPCentroidalVel(OCP):
 
         for dx_sol, u_sol in zip(self.DX_prev, self.U_prev):
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
-            self.hs.append(np.array(x_sol[:6]))
-            self.qs.append(np.array(x_sol[6:]))
-            self.us.append(np.array(u_sol))
+            self.h_sol.append(np.array(x_sol[:6]))
+            self.q_sol.append(np.array(x_sol[6:]))
+            self.u_sol.append(np.array(u_sol))
 
             if not retract_all:
                 return
@@ -143,14 +172,14 @@ class OCPCentroidalVel(OCP):
             self.U_prev.append(np.array(u_sol))
 
             if i == 0 or retract_all:
-                self.hs.append(np.array(x_sol[:6]))
-                self.qs.append(np.array(x_sol[6:]))
-                self.us.append(np.array(u_sol))
+                self.h_sol.append(np.array(x_sol[:6]))
+                self.q_sol.append(np.array(x_sol[6:]))
+                self.u_sol.append(np.array(u_sol))
 
         dx_last = sol_x[self.nodes*nx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)
         self.DX_prev.append(np.array(dx_last))
 
         if retract_all:
-            self.hs.append(np.array(x_last[:6]))
-            self.qs.append(np.array(x_last[6:]))
+            self.h_sol.append(np.array(x_last[:6]))
+            self.q_sol.append(np.array(x_last[6:]))

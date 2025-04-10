@@ -1,0 +1,22 @@
+from .ocp_centroidal_vel import OCPCentroidalVel
+from .ocp_centroidal_acc import OCPCentroidalAcc
+from .ocp_whole_body_acc import OCPWholeBodyAcc
+from .ocp_rnea import OCP_RNEA
+
+
+def make_ocp(dynamics, **kwargs):
+    ocp_classes = {
+        "centroidal_vel": OCPCentroidalVel,
+        "centroidal_acc": OCPCentroidalAcc,
+        "whole_body_acc": OCPWholeBodyAcc,
+        "rnea": OCP_RNEA,
+    }
+
+    if dynamics not in ocp_classes:
+        raise ValueError(f"Unknown dynamics type: {dynamics}")
+    
+    ocp = ocp_classes[dynamics](**kwargs)
+    ocp.setup_problem()
+    ocp.set_weights()
+
+    return ocp
