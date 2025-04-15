@@ -8,7 +8,7 @@ from optimization import make_ocp
 # Parameters
 robot = B2(reference_pose="standing", payload=None)
 # robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
-dynamics = "whole_body_acc"
+dynamics = "whole_body_aba"
 include_base = True
 gait_type = "trot"
 gait_period = 0.8

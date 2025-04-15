@@ -10,7 +10,7 @@ from optimization import make_ocp
 # Problem parameters
 robot = B2(reference_pose="standing", payload="front")
 # robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
-dynamics = "rnea"
+dynamics = "whole_body_rnea"
 gait_type = "trot"
 gait_period = 0.8
 nodes = 14

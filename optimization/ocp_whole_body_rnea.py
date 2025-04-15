@@ -2,16 +2,16 @@ import numpy as np
 import casadi as ca
 import pinocchio as pin
 
-from dynamics import DynamicsRNEA
+from dynamics import DynamicsWholeBodyTorque
 from .ocp import OCP
 
 
-class OCP_RNEA(OCP):
+class OCPWholeBodyRNEA(OCP):
     def __init__(self, robot, nodes, tau_nodes):
         super().__init__(robot, nodes)
         self.tau_nodes = tau_nodes
 
-        self.dyn = DynamicsRNEA(self.model, self.mass, self.foot_frames)
+        self.dyn = DynamicsWholeBodyTorque(self.model, self.mass, self.foot_frames)
 
         # Nominal State
         self.x_nom = np.concatenate((self.robot.q0, [0] * self.nv))  # joint pos + vel
@@ -37,7 +37,7 @@ class OCP_RNEA(OCP):
             [1000],  # base lin z
             [1000] * 2,  # base ang x/y
             [2000],  # base ang z
-            [2] * self.nj,  # joint vel (all of them)
+            [1] * self.nj,  # joint vel (all of them)
         ))
 
         Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
@@ -149,7 +149,7 @@ class OCP_RNEA(OCP):
         self.opti.subject_to(dv_next == dv + a * dt)
 
         # RNEA constraint
-        tau_rnea = self.dyn.tau_dynamics(self.ext_force_frame)(q, v, a, forces)
+        tau_rnea = self.dyn.rnea_dynamics(self.ext_force_frame)(q, v, a, forces)
         self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
 
         # Torque constraints
