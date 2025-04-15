@@ -6,8 +6,7 @@ from .ocp import OCP
 
 
 class OCPWholeBodyABA(OCP):
-    def __init__(self, robot, nodes, include_base=False):
-        # include_base is not used, since we always just optimize joint torques
+    def __init__(self, robot, nodes):
         super().__init__(robot, nodes)
 
         # Dynamics

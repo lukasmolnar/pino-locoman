@@ -284,39 +284,3 @@ class OCPWholeBodyRNEA(OCP):
         if retract_all:
             self.q_sol.append(np.array(x_last[:self.nq]))
             self.v_sol.append(np.array(x_last[self.nq:]))
-
-    def simulate_step(self, x_init, u):
-        q = x_init[:self.nq]
-        v = x_init[self.nq:]
-        forces = u[self.f_idx:self.tau_idx]
-        tau_j = u[self.tau_idx:]
-        dt_sim = self.opti.value(self.dt_min)  # the first step size
-
-        ee_frames = self.foot_frames.copy()
-        if self.arm_ee_frame:
-            ee_frames.append(self.arm_ee_frame)
-
-        pin.framesForwardKinematics(self.model, self.data, q)
-        f_ext = [pin.Force(np.zeros(6)) for _ in range(self.model.njoints)]
-        for idx, frame_id in enumerate(ee_frames):
-            joint_id = self.model.frames[frame_id].parentJoint
-            translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation
-            rotation_world_to_joint_frame = self.data.oMi[joint_id].rotation.T
-            f_world = forces[idx * 3 : (idx + 1) * 3].flatten()
-
-            f_lin = rotation_world_to_joint_frame @ f_world
-            f_ang = np.cross(translation_joint_to_contact_frame, f_lin)
-            f = np.concatenate((f_lin, f_ang))
-            f_ext[joint_id] = pin.Force(f)
-
-        tau = np.concatenate((np.zeros(6), tau_j.flatten()))
-        a = pin.aba(self.model, self.data, q, v, tau, f_ext)
-
-        dq = v * dt_sim + 0.5 * a * dt_sim**2
-        dv = a * dt_sim
-
-        q_next = pin.integrate(self.model, q, dq)
-        v_next = v + dv
-        x_next = np.concatenate((q_next, v_next))
-
-        return x_next
