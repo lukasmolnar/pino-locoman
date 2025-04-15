@@ -40,25 +40,17 @@ class DynamicsCentroidalVel(Dynamics):
 
         return ca.Function("difference", [x0, x1], [dx], ["x0", "x1"], ["dx"])
 
-    def dynamics(self, ext_force_frame=None):
-        # States
-        p_com = ca.SX.sym("p_com", 3)  # COM linear momentum
-        l_com = ca.SX.sym("l_com", 3)  # COM angular momentum
-        h = ca.vertcat(p_com, l_com)
-        q = ca.SX.sym("q", self.nq)  # generalized coordinates (base + joints)
+    def com_dynamics(self, ext_force_frame=None):
+        q = ca.SX.sym("q", self.nq)  # positions
 
-        # Inputs
+        # End-effector forces
         nf = len(self.foot_frames)
         if ext_force_frame:
             nf += 1
-        f_e = [ca.SX.sym(f"f_e_{i}", 3) for i in range(nf)]  # end-effector forces
-        dq_j = ca.SX.sym("dq_j", self.nj)  # joint velocities
+        f_e = [ca.SX.sym(f"f_e_{i}", 3) for i in range(nf)]
+        forces = ca.vertcat(*f_e)
 
-        # Base velocity
-        dq_b = ca.SX.sym("dq_b", 6)
-        dq = ca.vertcat(dq_b, dq_j)
-
-        # TODO: Check Pinocchio terms
+        # Pinocchio terms
         cpin.forwardKinematics(self.model, self.data, q)
         cpin.centerOfMass(self.model, self.data)
         cpin.updateFramePlacements(self.model, self.data)
@@ -74,37 +66,41 @@ class DynamicsCentroidalVel(Dynamics):
             r_ee = self.data.oMf[ext_force_frame].translation - self.data.com[0]
             dl_com += ca.cross(r_ee, f_e[-1])
 
-        h = ca.vertcat(p_com, l_com)
-        dh = ca.vertcat(dp_com, dl_com) / self.mass # scale by mass
+        h_dot = ca.vertcat(dp_com, dl_com) / self.mass  # scale h by mass
 
-        # Stack states and inputs
-        x = ca.vertcat(h, q)
-        u = ca.SX.sym("u", 0)
-        for f in f_e:
-            u = ca.vertcat(u, f)
-        u = ca.vertcat(u, dq_j)
+        return ca.Function("com_dyn", [q, forces], [h_dot], ["q", "forces"], ["dh"])
 
-        # Return dynamics: dx = f(x, u)
-        dx = ca.vertcat(dh, dq)
-
-        return ca.Function("centroidal_vel_dyn", [x, u, dq_b], [dx], ["x", "u", "dq_b"], ["dx"])
-
-    def get_base_velocity(self):
-        h = ca.SX.sym("h", 6)
-        q = ca.SX.sym("q", self.nq)
-        dq_j = ca.SX.sym("dq_j", self.nj)
+    def base_vel_dynamics(self):
+        h = ca.SX.sym("h", 6)  # COM momentum
+        q = ca.SX.sym("q", self.nq)  # positions
+        v_j = ca.SX.sym("v_j", self.nj)  # joint velocities
 
         # Pinocchio terms
         cpin.forwardKinematics(self.model, self.data, q)
-        cpin.computeCentroidalMap(self.model, self.data, q)
+        A = cpin.computeCentroidalMap(self.model, self.data, q)
 
-        A = self.data.Ag
-        Ab = A[:, :6]
-        Aj = A[:, 6:]
-        Ab_inv = self._compute_Ab_inv(Ab)
-        dq_b = Ab_inv @ (h * self.mass - Aj @ dq_j)  # scale by mass
+        # Base velocity dynamics
+        A_b = A[:, :6]
+        A_j = A[:, 6:]
+        # A_b_inv = self._compute_Ab_inv(Ab)
+        A_b_inv = ca.inv(A_b)
+        v_b = A_b_inv @ (h * self.mass - A_j @ v_j)  # scale h by mass
 
-        return ca.Function("base_vel", [h, q, dq_j], [dq_b], ["h", "q", "dq_j"], ["dq_b"])
+        return ca.Function("base_vel", [h, q, v_j], [v_b], ["h", "q", "v_j"], ["v_b"])
+
+    def dynamics_gaps(self):
+        h = ca.SX.sym("h", 6)  # COM momentum
+        q = ca.SX.sym("q", self.nq)  # positions
+        v = ca.SX.sym("v", self.nv)  # velocities
+
+        # Pinocchio terms
+        cpin.forwardKinematics(self.model, self.data, q)
+        A = cpin.computeCentroidalMap(self.model, self.data, q)
+
+        # Dynamics gaps
+        gaps = A @ v - h * self.mass  # scale h by mass
+
+        return ca.Function("dyn_gaps", [h, q, v], [gaps], ["h", "q", "v"], ["gaps"])
 
     def _compute_Ab_inv(self, Ab):
         # NOTE: This is the OCS2 implementation

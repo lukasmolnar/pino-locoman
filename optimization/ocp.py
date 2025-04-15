@@ -4,7 +4,7 @@ import casadi as ca
 import osqp
 from scipy import sparse
 
-from utils.helpers import *
+from utils.gait_sequence import *
 from dynamics import DynamicsCentroidalVel
 
 
@@ -27,6 +27,12 @@ class OCP:
         self.nodes = nodes
         self.mass = self.data.mass[0]
         self.opti = ca.Opti()
+
+        # Store solutions
+        self.q_sol = []
+        self.v_sol = []
+        self.a_sol = []
+        self.forces_sol = []
 
     def setup_problem(self):
         self.setup_variables()
@@ -202,6 +208,10 @@ class OCP:
     def get_forces(self, i):
         pass
 
+    def set_weights(self):
+        """Set the weight matrix diagonals Q_diag and R_diag."""
+        pass
+
     def set_time_params(self, dt_min, dt_max):
         self.opti.set_value(self.dt_min, dt_min)
         self.opti.set_value(self.dt_max, dt_max)
@@ -216,10 +226,6 @@ class OCP:
             self.opti.set_value(self.ext_force_des, ext_force_des)
         if self.arm_ee_frame:
             self.opti.set_value(self.arm_vel_des, arm_vel_des)
-
-    def set_weights(self, Q_diag, R_diag):
-        self.opti.set_value(self.Q_diag, Q_diag)
-        self.opti.set_value(self.R_diag, R_diag)
 
     def update_initial_state(self, x_init):
         self.opti.set_value(self.x_init, x_init)

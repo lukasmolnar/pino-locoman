@@ -2,7 +2,6 @@ import numpy as np
 import casadi as ca
 import pinocchio as pin
 
-from utils.helpers import *
 from dynamics import DynamicsRNEA
 from .ocp import OCP
 
@@ -14,12 +13,48 @@ class OCP_RNEA(OCP):
 
         self.dyn = DynamicsRNEA(self.model, self.mass, self.foot_frames)
 
+        # Nominal State
+        self.x_nom = np.concatenate((self.robot.q0, [0] * self.nv))  # joint pos + vel
+
         # Store solutions
-        self.qs = []
-        self.vs = []
-        self.accs = []
-        self.forces = []
-        self.taus = []
+        self.tau_sol = []
+
+    def set_weights(self):
+        # State and input weights
+        Q_base_pos_diag = np.concatenate((
+            [0] * 2,      # base x/y
+            [1000],       # base z
+            [10000] * 2,  # base rot x/y
+            [0],          # base rot z
+        ))
+        Q_joint_pos_diag = np.tile([1000, 500, 500], 4)  # hip, thigh, calf
+
+        if self.arm_ee_frame:
+            Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
+
+        Q_vel_diag = np.concatenate((
+            [2000] * 2,  # base lin x/y
+            [1000],  # base lin z
+            [1000] * 2,  # base ang x/y
+            [2000],  # base ang z
+            [2] * self.nj,  # joint vel (all of them)
+        ))
+
+        Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
+        R_diag = np.concatenate((
+            [1e-3] * self.nv,  # accelerations
+            [1e-3] * self.nf,  # forces
+            [1e-4] * self.nj,  # joint torques
+        ))
+
+        # Additional weights
+        W_diag = np.concatenate((
+            [0] * self.nj,  # keep tau_0 close to tau_prev
+        ))
+
+        self.opti.set_value(self.Q_diag, Q_diag)
+        self.opti.set_value(self.R_diag, R_diag)
+        self.opti.set_value(self.W_diag, W_diag)
 
     def setup_variables(self):
         # State size
@@ -150,10 +185,6 @@ class OCP_RNEA(OCP):
         tau_sol = u_sol[self.tau_idx:]
         return tau_sol
 
-    def set_weights(self, Q_diag, R_diag, W_diag):
-        super().set_weights(Q_diag, R_diag)
-        self.opti.set_value(self.W_diag, W_diag)
-
     def update_previous_torques(self, tau_prev):
         self.opti.set_value(self.tau_prev, tau_prev)
 
@@ -208,18 +239,18 @@ class OCP_RNEA(OCP):
 
         for dx_sol, u_sol in zip(self.DX_prev, self.U_prev):
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
-            self.qs.append(np.array(x_sol[:self.nq]))
-            self.vs.append(np.array(x_sol[self.nq:]))
-            self.accs.append(np.array(u_sol[:self.f_idx]))
-            self.forces.append(np.array(u_sol[self.f_idx:self.tau_idx]))
-            self.taus.append(np.array(u_sol[self.tau_idx:]))
+            self.q_sol.append(np.array(x_sol[:self.nq]))
+            self.v_sol.append(np.array(x_sol[self.nq:]))
+            self.a_sol.append(np.array(u_sol[:self.f_idx]))
+            self.forces_sol.append(np.array(u_sol[self.f_idx:self.tau_idx]))
+            self.tau_sol.append(np.array(u_sol[self.tau_idx:]))
 
             if not retract_all:
                 return
 
         x_last = self.dyn.state_integrate()(x_init, self.DX_prev[-1])
-        self.qs.append(np.array(x_last[:self.nq]))
-        self.vs.append(np.array(x_last[self.nq:]))
+        self.q_sol.append(np.array(x_last[:self.nq]))
+        self.v_sol.append(np.array(x_last[self.nq:]))
 
     def retract_stacked_sol(self, sol_x, retract_all=True):
         # Retract the given solution, which contains all stacked states and inputs
@@ -240,21 +271,20 @@ class OCP_RNEA(OCP):
             self.U_prev.append(np.array(u_sol))
             
             if i == 0 or retract_all:
-                self.qs.append(np.array(x_sol[:self.nq]))
-                self.vs.append(np.array(x_sol[self.nq:]))
-                self.accs.append(np.array(u_sol[:self.f_idx]))
-                self.forces.append(np.array(u_sol[self.f_idx:self.tau_idx]))
-                self.taus.append(np.array(u_sol[self.tau_idx:]))
+                self.q_sol.append(np.array(x_sol[:self.nq]))
+                self.v_sol.append(np.array(x_sol[self.nq:]))
+                self.a_sol.append(np.array(u_sol[:self.f_idx]))
+                self.forces_sol.append(np.array(u_sol[self.f_idx:self.tau_idx]))
+                self.tau_sol.append(np.array(u_sol[self.tau_idx:]))
 
         dx_last = sol_x[-self.ndx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)
         self.DX_prev.append(np.array(dx_last))
 
         if retract_all:
-            self.qs.append(np.array(x_last[:self.nq]))
-            self.vs.append(np.array(x_last[self.nq:]))
+            self.q_sol.append(np.array(x_last[:self.nq]))
+            self.v_sol.append(np.array(x_last[self.nq:]))
 
-    
     def simulate_step(self, x_init, u):
         q = x_init[:self.nq]
         v = x_init[self.nq:]

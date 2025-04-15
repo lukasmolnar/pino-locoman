@@ -7,14 +7,14 @@ import matplotlib.pyplot as plt
 from utils.robot import *
 from optimization import make_ocp
 
-# Problem parameters
-robot = B2(reference_pose="standing", payload="front")
+# Parameters
+robot = B2(reference_pose="standing", payload=None)
 # robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
-dynamics = "rnea"
+dynamics ="whole_body_acc"
+include_base = True
 gait_type = "trot"
 gait_period = 0.8
 nodes = 14
-tau_nodes = 3  # remove torques afterwards
 dt_min = 0.01  # used for simulation
 dt_max = 0.08
 
@@ -35,7 +35,7 @@ solver = "fatrop"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_b2_payload_rear_N14_tau3.so"
+# load_compiled_solver = "libsolver_b2_wb_aj_N14.so"
 
 debug = False  # print info
 plot = False
@@ -43,9 +43,7 @@ plot = False
 
 def mpc_loop(ocp, robot_instance):
     x_init = ocp.x_nom
-    tau_prev = np.zeros(robot.nj)
     solve_times = []
-    tau_diffs = []
 
     if solver == "fatrop" and compile_solver:
         if load_compiled_solver:
@@ -57,19 +55,14 @@ def mpc_loop(ocp, robot_instance):
             ocp.compile_solver()
             solver_function = ocp.solver_function
 
-        # Warm start (dual variables)
-        # lam_g_warm_start = ocp.opti.value(ocp.opti.lam_g, ocp.opti.initial())
-
         # Fixed parameters
         Q_diag = ocp.opti.value(ocp.Q_diag)
         R_diag = ocp.opti.value(ocp.R_diag)
-        W_diag = ocp.opti.value(ocp.W_diag)
 
         for k in range(mpc_loops):
             # Update parameters
             t_current = k * dt_min
             ocp.update_initial_state(x_init)
-            ocp.update_previous_torques(tau_prev)
             ocp.update_gait_sequence(t_current)
             contact_schedule = ocp.opti.value(ocp.contact_schedule)
             swing_schedule = ocp.opti.value(ocp.swing_schedule)
@@ -88,40 +81,28 @@ def mpc_loop(ocp, robot_instance):
                 x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
                 params += [x_warm_start]
 
-            # RNEA params
-            params += [tau_prev, W_diag]
-
             # Solve
             start_time = time.time()
             sol_x = solver_function(*params)
             end_time = time.time()
             sol_time = end_time - start_time
             solve_times.append(sol_time)
+
             print("Solve time (ms): ", sol_time * 1000)
 
             # Retract solution and update x_init
             ocp.retract_stacked_sol(sol_x, retract_all=False)
-            x_pred = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
-            x_init = ocp.simulate_step(x_init, ocp.U_prev[0])
-            x_diff = x_pred - x_init
-            print("x_diff norm: ", np.linalg.norm(x_diff))
+            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])  # TODO: simulate step
 
-            tau_0 = ocp.get_tau_sol(i=0)
-            tau_diff = np.linalg.norm(tau_0 - tau_prev)
-            tau_diffs.append(tau_diff)
-            tau_prev = ocp.get_tau_sol(i=1)  # update with next idx
-
-            # lam_g_warm_start = sol_lam_g
             robot_instance.display(ocp.q_sol[-1])  # Display last q
 
     else:
         # Initialize solver
-        ocp.init_solver(solver, compile_solver, warm_start)
+        ocp.init_solver(solver=solver, compile_solver=compile_solver)
 
         for k in range(mpc_loops):
             t_current = k * dt_min
             ocp.update_initial_state(x_init)
-            ocp.update_previous_torques(tau_prev)
             ocp.update_gait_sequence(t_current)
             if warm_start:
                 ocp.warm_start()
@@ -129,17 +110,11 @@ def mpc_loop(ocp, robot_instance):
             ocp.solve(retract_all=False)
             solve_times.append(ocp.solve_time)
 
-            x_init = ocp._simulate_step(x_init, ocp.U_prev[0])
+            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])  # TODO: simulate step
             robot_instance.display(ocp.q_sol[-1])  # Display last q
 
     print("Avg solve time (ms): ", np.average(solve_times) * 1000)
     print("Std solve time (ms): ", np.std(solve_times) * 1000)
-
-    print("Avg tau diff: ", np.average(tau_diffs))
-    print("Std tau diff: ", np.std(tau_diffs))
-
-    T = sum([ocp.opti.value(dt) for dt in ocp.dts])
-    print("Horizon length (s): ", T)
 
     return ocp
 
@@ -165,7 +140,7 @@ def main():
         dynamics=dynamics,
         robot=robot,
         nodes=nodes,
-        tau_nodes=tau_nodes,
+        include_base=include_base,
     )
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
@@ -178,6 +153,7 @@ def main():
         print("************** DEBUG **************")
         tau_diffs = []
         tau_b_norms = []
+        tau_j_sol = []
         for k in range(len(ocp.q_sol)):
             q = ocp.q_sol[k].flatten()
             v = ocp.v_sol[k].flatten()
@@ -219,46 +195,49 @@ def main():
             # tau_rnea = pin.rnea(model, data, q, v, a) - tau_ext
 
             tau_diff = tau_all - tau_rnea
-            tau_b = tau_rnea[:6]
+            tau_b = tau_all[:6]
+            tau_j = tau_all[6:]
             tau_diffs.append(np.linalg.norm(tau_diff))
             tau_b_norms.append(np.linalg.norm(tau_b))
-
+            tau_j_sol.append(tau_j)
+        
         print("Avg tau_diff: ", np.mean(tau_diffs))
         print("Std tau_diff: ", np.std(tau_diffs))
         print("Avg tau_b_norm: ", np.mean(tau_b_norms))
         print("Std tau_b_norm: ", np.std(tau_b_norms))
 
-    if plot:
-        # Plot q, v, tau
-        fig, axs = plt.subplots(3, 1, figsize=(10, 15))
-        labels = ["FL hip", "FL thigh", "FL calf", "FR hip", "FR thigh", "FR calf",
-                  "RL hip", "RL thigh", "RL calf", "RR hip", "RR thigh", "RR calf"]
+        if plot:
+            # Plot q, v, tau
+            fig, axs = plt.subplots(3, 1, figsize=(10, 15))
+            labels = ["FL hip", "FL thigh", "FL calf", "FR hip", "FR thigh", "FR calf",
+                    "RL hip", "RL thigh", "RL calf", "RR hip", "RR thigh", "RR calf"]
 
-        axs[0].set_title("Joint positions (q)")
-        for j in range(12):
-            # Ignore base (quaternion)
-            axs[0].plot([q[7 + j] for q in ocp.q_sol], label=labels[j])
-        axs[0].legend()
+            axs[0].set_title("Joint positions (q)")
+            for j in range(12):
+                # Ignore base (quaternion)
+                axs[0].plot([q[7 + j] for q in ocp.q_sol], label=labels[j])
+            axs[0].legend()
 
-        axs[1].set_title("Joint velocities (v)")
-        for j in range(12):
-            # Ignore base
-            axs[1].plot([v[6 + j] for v in ocp.v_sol], label=labels[j])
-        axs[1].legend()
+            axs[1].set_title("Joint velocities (v)")
+            for j in range(12):
+                # Ignore base
+                axs[1].plot([v[6 + j] for v in ocp.v_sol], label=labels[j])
+            axs[1].legend()
 
-        axs[2].set_title("Joint torques (tau)")
-        for j in range(12):
-            axs[2].plot([tau[j] for tau in ocp.tau_sol], label=labels[j])
-        axs[2].legend()
+            axs[2].set_title("Joint torques (tau)")
+            for j in range(12):
+                axs[2].plot([tau[j] for tau in tau_j_sol], label=labels[j])
+            axs[2].legend()
 
-        plt.tight_layout()
-        plt.show()
+            plt.tight_layout()
+            plt.show()
 
-    # Visualize
+    # Visualize 
     for _ in range(50):
         for q in ocp.q_sol:
             robot_instance.display(q)
             time.sleep(dt_min)
+
 
 if __name__ == "__main__":
     main()

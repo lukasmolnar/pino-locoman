@@ -40,7 +40,7 @@ class DynamicsCentroidalAcc(Dynamics):
 
         return ca.Function("difference", [x0, x1], [dx], ["x0", "x1"], ["dx"])
 
-    def base_acceleration_dynamics(self, ext_force_frame=None):
+    def base_acc_dynamics(self, ext_force_frame=None):
         q = ca.SX.sym("q", self.nq)  # positions
         v = ca.SX.sym("v", self.nv)  # velocities
         a_j = ca.SX.sym("a_j", self.nj)  # joint accelerations
@@ -75,10 +75,48 @@ class DynamicsCentroidalAcc(Dynamics):
         # Base acceleration dynamics
         A_j = A[:, 6:]
         A_b = A[:, :6]
-        A_b_inv = self._compute_Ab_inv(A_b)
+        # A_b_inv = self._compute_Ab_inv(A_b)
+        A_b_inv = ca.inv(A_b)
         a_b = A_b_inv @ (dh - Adot @ v - A_j @ a_j)
 
         return ca.Function("base_acc", [q, v, a_j, forces], [a_b], ["q", "v", "a_j", "forces"], ["a_b"])
+
+    def dynamics_gaps(self, ext_force_frame=None):
+        q = ca.SX.sym("q", self.nq)  # positions
+        v = ca.SX.sym("v", self.nv)  # velocities
+        a = ca.SX.sym("a", self.nv)  # accelerations
+
+        # End-effector forces
+        nf = len(self.foot_frames)
+        if ext_force_frame:
+            nf += 1
+        f_e = [ca.SX.sym(f"f_e_{i}", 3) for i in range(nf)]
+        forces = ca.vertcat(*f_e)
+
+        # Pinocchio terms
+        cpin.forwardKinematics(self.model, self.data, q)
+        cpin.updateFramePlacements(self.model, self.data)
+        r_com = cpin.centerOfMass(self.model, self.data)
+        A = cpin.computeCentroidalMap(self.model, self.data, q)
+        Adot = cpin.dccrba(self.model, self.data, q, v)
+
+        # COM Dynamics
+        g = np.array([0, 0, -9.81 * self.mass])
+        dp_com = sum(f_e) + g
+        dl_com = ca.SX.zeros(3)
+        for idx, frame_id in enumerate(self.foot_frames):
+            r_ee = self.data.oMf[frame_id].translation - r_com
+            dl_com += ca.cross(r_ee, f_e[idx])
+        if ext_force_frame:
+            r_ee = self.data.oMf[ext_force_frame].translation - r_com
+            dl_com += ca.cross(r_ee, f_e[-1])
+
+        dh = ca.vertcat(dp_com, dl_com)
+
+        # Dynamics gaps
+        gaps = A @ a + Adot @ v - dh
+
+        return ca.Function("dyn_gaps", [q, v, a, forces], [gaps], ["q", "v", "a", "forces"], ["a_b"])
 
     def _compute_Ab_inv(self, Ab):
         # NOTE: This is the OCS2 implementation

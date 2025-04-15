@@ -1,21 +1,52 @@
 import numpy as np
 import casadi as ca
 
-from utils.helpers import *
 from dynamics import DynamicsCentroidalVel
 from .ocp import OCP
 
 
 class OCPCentroidalVel(OCP):
-    def __init__(self, robot, nodes):
+    def __init__(self, robot, nodes, include_base=False):
         super().__init__(robot, nodes)
 
+        # Dynamics
         self.dyn = DynamicsCentroidalVel(self.model, self.mass, self.foot_frames)
 
-        # Store solutions
-        self.hs = []
-        self.qs = []
-        self.us = []
+        # Nominal state
+        self.x_nom = np.concatenate(([0] * 6, self.robot.q0))  # CoM + joint pos
+
+        # Whether to include base velocities in the inputs
+        self.include_base = include_base
+        if self.include_base:
+            self.nv_opt = self.nv
+        else:
+            self.nv_opt = self.nj
+
+    def set_weights(self):
+        # State and input weights
+        Q_com_diag = np.concatenate((
+            [1000] * 3,   # CoM lin momentum
+            [1000] * 3,   # CoM ang momentum
+        ))
+        Q_base_pos_diag = np.concatenate((
+            [0] * 2,      # base x/y
+            [1000],       # base z
+            [10000] * 2,  # base rot x/y
+            [0],          # base rot z
+        ))
+        Q_joint_pos_diag = np.tile([1000, 500, 500], 4)  # hip, thigh, calf
+
+        if self.arm_ee_frame:
+            Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
+
+        Q_diag = np.concatenate((Q_com_diag, Q_base_pos_diag, Q_joint_pos_diag))
+        R_diag = np.concatenate((
+            [1] * self.nv_opt,  # velocities
+            [1e-3] * self.nf,  # forces
+        ))
+
+        self.opti.set_value(self.Q_diag, Q_diag)
+        self.opti.set_value(self.R_diag, R_diag)
 
     def setup_variables(self):
         # State size
@@ -23,7 +54,8 @@ class OCPCentroidalVel(OCP):
         self.ndx_opt = 6 + self.nv  # centroidal momentum + position deltas
 
         # Input size: Can be adaptive for each node
-        self.nu_opt = [self.nf + self.nj] * self.nodes  # forces + joint velocities
+        self.nu_opt = [self.nv_opt + self.nf] * self.nodes  # velocities + end-effector forces
+        self.f_idx = self.nv_opt  # start index for forces
 
         # Decision variables
         self.DX_opt = []
@@ -48,22 +80,31 @@ class OCPCentroidalVel(OCP):
             self.f_des = ca.vertcat(self.f_des, [0] * 3)  # zero force at end-effector
 
         # Desired input (use this for warm starting)
-        self.u_des = ca.vertcat(self.f_des, [0] * self.nj)  # zero joint vel
+        self.u_des = ca.vertcat([0] * self.nv_opt, self.f_des)  # zero velocities
 
     def setup_dynamics_constraints(self, i):
         # Gather all state and input info
         dx = self.DX_opt[i]
-        x = self.dyn.state_integrate()(self.x_init, dx)
-        u = self.U_opt[i]
+        dh = dx[:6]  # delta h
+        dq = dx[6:]  # delta q, not v
         h = self.get_h(i)
         q = self.get_q(i)
-        dq_j = self.get_v_joints(i)
-        dq_b = self.dyn.get_base_velocity()(h, q, dq_j)
+        v = self.get_v(i)
+        forces = self.get_forces(i)
+        dt = self.dts[i]
 
         # Dynamics constraint
         dx_next = self.DX_opt[i+1]
-        dx_dyn = self.dyn.dynamics(self.ext_force_frame)(x, u, dq_b)
-        self.opti.subject_to(dx_next == dx + dx_dyn * self.dts[i])
+        dh_next = dx_next[:6]
+        dq_next = dx_next[6:]
+        h_dot = self.dyn.com_dynamics(self.ext_force_frame)(q, forces)
+        self.opti.subject_to(dh_next == dh + h_dot * dt)
+        self.opti.subject_to(dq_next == dq + v * dt)
+
+        if self.include_base:
+            # Path constraint for dynamics gaps
+            gaps = self.dyn.dynamics_gaps()(h, q, v)
+            self.opti.subject_to(gaps == [0] * 6)
 
     def get_h(self, i):
         dx = self.DX_opt[i]
@@ -76,19 +117,20 @@ class OCPCentroidalVel(OCP):
         return x[6:]
 
     def get_v(self, i):
-        h = self.get_h(i)
-        q = self.get_q(i)
-        dq_j = self.get_v_joints(i)
-        dq_b = self.dyn.get_base_velocity()(h, q, dq_j)
-        return ca.vertcat(dq_b, dq_j)
+        if self.include_base:
+            v = self.U_opt[i][:self.nv_opt]
+        else:
+            v_j = self.U_opt[i][:self.nv_opt]
+            # Compute base acceleration from dynamics
+            h = self.get_h(i)
+            q = self.get_q(i)
+            v_b = self.dyn.base_vel_dynamics()(h, q, v_j)
+            v = ca.vertcat(v_b, v_j)
+        return v
 
     def get_forces(self, i):
         u = self.U_opt[i]
-        return u[:self.nf]
-
-    def get_v_joints(self, i):
-        u = self.U_opt[i]
-        return u[self.nf:]
+        return u[self.f_idx:]
 
     def warm_start(self):
         # TODO: Look into interpolating
@@ -101,12 +143,12 @@ class OCPCentroidalVel(OCP):
 
         if self.U_prev is not None:
             for i in range(self.nodes):
-                # Previous solution for dq_j
+                # Previous solution for v
                 # Tracking target for f (gravity compensation)
                 u_prev = self.U_prev[i]
-                dq_j_prev = u_prev[self.nf:]
+                v_prev = u_prev[:self.nv_opt]
                 f_des = self.opti.value(self.f_des)
-                u_warm = ca.vertcat(f_des, dq_j_prev)
+                u_warm = ca.vertcat(v_prev, f_des)
                 self.opti.set_initial(self.U_opt[i], u_warm)
 
         if self.lam_g is not None:
@@ -120,9 +162,20 @@ class OCPCentroidalVel(OCP):
 
         for dx_sol, u_sol in zip(self.DX_prev, self.U_prev):
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
-            self.hs.append(np.array(x_sol[:6]))
-            self.qs.append(np.array(x_sol[6:]))
-            self.us.append(np.array(u_sol))
+            h = np.array(x_sol[:6])
+            q = np.array(x_sol[6:])
+            forces = np.array(u_sol[self.f_idx:])
+            if self.include_base:
+                v = np.array(u_sol[:self.nv_opt])
+            else:
+                v_j = np.array(u_sol[:self.nv_opt])
+                # Compute base velocity from dynamics
+                v_b = self.dyn.base_vel_dynamics()(h, q, v_j)
+                v = np.concatenate((v_b, v_j))
+
+            self.q_sol.append(q)
+            self.v_sol.append(v)
+            self.forces_sol.append(forces)
 
             if not retract_all:
                 return
@@ -143,14 +196,24 @@ class OCPCentroidalVel(OCP):
             self.U_prev.append(np.array(u_sol))
 
             if i == 0 or retract_all:
-                self.hs.append(np.array(x_sol[:6]))
-                self.qs.append(np.array(x_sol[6:]))
-                self.us.append(np.array(u_sol))
+                h = np.array(x_sol[:6])
+                q = np.array(x_sol[6:])
+                forces = np.array(u_sol[self.f_idx:])
+                if self.include_base:
+                    v = np.array(u_sol[:self.nv_opt])
+                else:
+                    v_j = np.array(u_sol[:self.nv_opt])
+                    # Compute base velocity from dynamics
+                    v_b = self.dyn.base_vel_dynamics()(h, q, v_j)
+                    v = np.concatenate((v_b, v_j))
+
+                self.q_sol.append(q)
+                self.v_sol.append(v)
+                self.forces_sol.append(forces)
 
         dx_last = sol_x[self.nodes*nx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)
         self.DX_prev.append(np.array(dx_last))
 
         if retract_all:
-            self.hs.append(np.array(x_last[:6]))
-            self.qs.append(np.array(x_last[6:]))
+            self.q_sol.append(np.array(x_last[6:]))
