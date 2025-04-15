@@ -37,8 +37,8 @@ compile_solver = True
 load_compiled_solver = None
 # load_compiled_solver = "libsolver_b2_wb_aj_N14.so"
 
-debug = True  # print info
-plot = True
+debug = False  # print info
+plot = False
 
 
 def mpc_loop(ocp, robot_instance):
@@ -154,7 +154,7 @@ def main():
         tau_diffs = []
         tau_b_norms = []
         tau_j_sol = []
-        for k in range(nodes):
+        for k in range(len(ocp.q_sol)):
             q = ocp.q_sol[k].flatten()
             v = ocp.v_sol[k].flatten()
             a = ocp.a_sol[k].flatten()

@@ -17,10 +17,6 @@ class OCP_RNEA(OCP):
         self.x_nom = np.concatenate((self.robot.q0, [0] * self.nv))  # joint pos + vel
 
         # Store solutions
-        self.q_sol = []
-        self.v_sol = []
-        self.a_sol = []
-        self.forces_sol = []
         self.tau_sol = []
 
     def set_weights(self):

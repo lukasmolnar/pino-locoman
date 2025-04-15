@@ -37,8 +37,8 @@ compile_solver = True
 load_compiled_solver = None
 # load_compiled_solver = "libsolver_b2_payload_rear_N14_tau3.so"
 
-debug = True  # print info
-plot = True
+debug = False  # print info
+plot = False
 
 
 def mpc_loop(ocp, robot_instance):

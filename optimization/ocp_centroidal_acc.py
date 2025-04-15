@@ -15,17 +15,12 @@ class OCPCentroidalAcc(OCP):
         # Nominal state
         self.x_nom = np.concatenate((self.robot.q0, [0] * self.nv))  # joint pos + vel
 
-        # Store solutions
-        self.q_sol = []
-        self.v_sol = []
-        self.a_sol = []
-        self.forces_sol = []
-
         # Whether to include base accelerations in the inputs
         self.include_base = include_base
-        self.n_acc = self.nj
         if self.include_base:
-            self.n_acc += 6
+            self.na_opt = self.nv
+        else:
+            self.na_opt = self.nj
 
     def set_weights(self):
         # State and input weights
@@ -45,12 +40,12 @@ class OCPCentroidalAcc(OCP):
             [1000],         # base lin z
             [1000] * 2,     # base ang x/y
             [2000],         # base ang z
-            [2] * self.nj,  # joint vel (all of them)
+            [1] * self.nj,  # joint vel (all of them)
         ))
 
         Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
         R_diag = np.concatenate((
-            [1e-3] * self.n_acc,  # accelerations
+            [1e-3] * self.na_opt,  # accelerations
             [1e-3] * self.nf,     # forces
         ))
 
@@ -63,8 +58,8 @@ class OCPCentroidalAcc(OCP):
         self.ndx_opt = self.nv * 2  # position deltas + velocities
 
         # Input size: Can be adaptive for each node
-        self.nu_opt = [self.n_acc + self.nf] * self.nodes  # accelerations + end-effector forces
-        self.f_idx = self.n_acc  # start index for forces
+        self.nu_opt = [self.na_opt + self.nf] * self.nodes  # accelerations + end-effector forces
+        self.f_idx = self.na_opt  # start index for forces
 
         # Decision variables
         self.DX_opt = []
@@ -89,7 +84,7 @@ class OCPCentroidalAcc(OCP):
             self.f_des = ca.vertcat(self.f_des, [0] * 3)  # zero force at end-effector
 
         # Desired input: Use this for warm starting
-        self.u_des = ca.vertcat([0] * self.n_acc, self.f_des)  # zero accelerations
+        self.u_des = ca.vertcat([0] * self.na_opt, self.f_des)  # zero accelerations
 
     def setup_dynamics_constraints(self, i):
         # Gather all state and input info
@@ -127,14 +122,14 @@ class OCPCentroidalAcc(OCP):
 
     def get_a(self, i):
         if self.include_base:
-            a = self.U_opt[i][:self.n_acc]
+            a = self.U_opt[i][:self.na_opt]
         else:
-            a_j = self.U_opt[i][:self.n_acc]
+            a_j = self.U_opt[i][:self.na_opt]
             # Compute base acceleration from dynamics
             q = self.get_q(i)
             v = self.get_v(i)
             forces = self.get_forces(i)
-            a_b = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+            a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
             a = ca.vertcat(a_b, a_j)
         return a
 
@@ -155,7 +150,7 @@ class OCPCentroidalAcc(OCP):
                 # Previous solution for a
                 # Tracking target for f (gravity compensation)
                 u_prev = self.U_prev[i]
-                a_prev = u_prev[:self.n_acc]
+                a_prev = u_prev[:self.na_opt]
                 f_des = self.opti.value(self.f_des)
                 u_warm = ca.vertcat(a_prev, f_des)
                 self.opti.set_initial(self.U_opt[i], u_warm)
@@ -171,21 +166,21 @@ class OCPCentroidalAcc(OCP):
 
         for dx_sol, u_sol in zip(self.DX_prev, self.U_prev):
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
-            q_sol = np.array(x_sol[:self.nq])
-            v_sol = np.array(x_sol[self.nq:])
-            forces_sol = np.array(u_sol[self.f_idx:])
+            q = np.array(x_sol[:self.nq])
+            v = np.array(x_sol[self.nq:])
+            forces = np.array(u_sol[self.f_idx:])
             if self.include_base:
-                a_sol = np.array(u_sol[:self.n_acc])
+                a = np.array(u_sol[:self.na_opt])
             else:
-                a_j_sol = np.array(u_sol[:self.n_acc])
+                a_j = np.array(u_sol[:self.na_opt])
                 # Compute base acceleration from dynamics
-                a_b_sol = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q_sol, v_sol, a_j_sol, forces_sol)
-                a_sol = np.concatenate((a_b_sol, a_j_sol))
+                a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+                a = np.concatenate((a_b, a_j))
 
-            self.q_sol.append(q_sol)
-            self.v_sol.append(v_sol)
-            self.a_sol.append(a_sol)
-            self.forces_sol.append(forces_sol)
+            self.q_sol.append(q)
+            self.v_sol.append(v)
+            self.a_sol.append(a)
+            self.forces_sol.append(forces)
 
             if not retract_all:
                 return
@@ -206,21 +201,21 @@ class OCPCentroidalAcc(OCP):
             self.U_prev.append(np.array(u_sol))
 
             if i == 0 or retract_all:
-                q_sol = np.array(x_sol[:self.nq])
-                v_sol = np.array(x_sol[self.nq:])
-                forces_sol = np.array(u_sol[self.f_idx:])
+                q = np.array(x_sol[:self.nq])
+                v = np.array(x_sol[self.nq:])
+                forces = np.array(u_sol[self.f_idx:])
                 if self.include_base:
-                    a_sol = np.array(u_sol[:self.n_acc])
+                    a = np.array(u_sol[:self.na_opt])
                 else:
-                    a_j_sol = np.array(u_sol[:self.n_acc])
+                    a_j = np.array(u_sol[:self.na_opt])
                     # Compute base acceleration from dynamics
-                    a_b_sol = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q_sol, v_sol, a_j_sol, forces_sol)
-                    a_sol = np.concatenate((a_b_sol, a_j_sol))
+                    a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+                    a = np.concatenate((a_b, a_j))
 
-                self.q_sol.append(q_sol)
-                self.v_sol.append(v_sol)
-                self.a_sol.append(a_sol)
-                self.forces_sol.append(forces_sol)
+                self.q_sol.append(q)
+                self.v_sol.append(v)
+                self.a_sol.append(a)
+                self.forces_sol.append(forces)
 
         dx_last = sol_x[self.nodes*nx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)

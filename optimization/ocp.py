@@ -28,6 +28,12 @@ class OCP:
         self.mass = self.data.mass[0]
         self.opti = ca.Opti()
 
+        # Store solutions
+        self.q_sol = []
+        self.v_sol = []
+        self.a_sol = []
+        self.forces_sol = []
+
     def setup_problem(self):
         self.setup_variables()
         self.setup_parameters()
@@ -248,7 +254,7 @@ class OCP:
             }
             opts["fatrop"] = {
                 "print_level": 1,
-                "max_iter": 6,
+                "max_iter": 10,
                 "tol": 1e-3,
                 "mu_init": 1e-4,
                 "warm_start_init_point": True,

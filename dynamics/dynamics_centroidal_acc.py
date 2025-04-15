@@ -40,7 +40,7 @@ class DynamicsCentroidalAcc(Dynamics):
 
         return ca.Function("difference", [x0, x1], [dx], ["x0", "x1"], ["dx"])
 
-    def base_acceleration_dynamics(self, ext_force_frame=None):
+    def base_acc_dynamics(self, ext_force_frame=None):
         q = ca.SX.sym("q", self.nq)  # positions
         v = ca.SX.sym("v", self.nv)  # velocities
         a_j = ca.SX.sym("a_j", self.nj)  # joint accelerations
@@ -75,7 +75,8 @@ class DynamicsCentroidalAcc(Dynamics):
         # Base acceleration dynamics
         A_j = A[:, 6:]
         A_b = A[:, :6]
-        A_b_inv = self._compute_Ab_inv(A_b)
+        # A_b_inv = self._compute_Ab_inv(A_b)
+        A_b_inv = ca.inv(A_b)
         a_b = A_b_inv @ (dh - Adot @ v - A_j @ a_j)
 
         return ca.Function("base_acc", [q, v, a_j, forces], [a_b], ["q", "v", "a_j", "forces"], ["a_b"])
