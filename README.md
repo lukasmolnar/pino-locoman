@@ -1,6 +1,6 @@
 # Loco-manipulation with Pinocchio
 
-![alt text](robots/b2g_description/b2g_image.png)
+![alt text](utils/images/b2g_image.png)
 
 ## Setup
 
@@ -23,31 +23,26 @@ conda install osqp -c conda-forge
 Run OCP and MPC examples with:
 
 ```bash
-python run_mpc_centroidal.py
+python run_mpc.py
 ```
 
 In the example files define:
-- Desired COM momentum (linear + angular)
-- Desired arm end-effector force + linear velocity
-- Desired gait type and period. The gait sequence is then parametrized, swing legs track bezier curves in z-direction and optimize in x/y-directions.
-
+- Robot: B2, B2G (with Z1 arm), Go2
+- Dynamics: centroidal_vel, centroidal_acc, whole_body_acc (RNEA has a separate script)
+- Gait: Type and period
+- Targets: Base velocity (linear + angular), external force, end-effector velocity (linear)
+- Swing params: Max height and takeoff/touchdown velocities
+- Solver options: Type, warm-starting, code-compilation
 
 ## Optimal Control Problem
 
 The OCP is formulated with the casadi Opti stack. This uses MX expressions, whereas Pinocchio uses SX expressions. For this reason all relevant Pinocchio expressions used in the constraints are converted to MX using casadi Functions.
 
-There are two options for what dynamics to use in the OCP:
+These are the following dynamics choices for the OCP:
 
-### Centroidal Dynamics
+![alt text](utils/images/dynamics_models.png)
 
-- States: Centroidal momentum, generalized coordinates
-- Inputs: Ground reaction forces, joint velocities (base velocity is calculated through the centroidal momentum matrix)
-
-### RNEA Dynamics
-
-- States: Generalized coordinates and velocities
-- Inputs: Ground reaction forces, joint torques. For the Fatrop solver the generalized velocities `v_next` also need to be included, to preserve the diagnoal structure. 
-
+Note: the "full" dynamics option is chosen with `include_base=True` in the example scripts. This makes the base variable part of the input, even though it is un-actuated. The dynamics are then ensured using a path constraint on each node, rather than propagating the base dynamics through the state.
 
 ## Solvers
 
