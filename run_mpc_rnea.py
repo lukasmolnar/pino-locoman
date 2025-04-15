@@ -161,7 +161,12 @@ def main():
     robot_instance.display(q0)
 
     # Setup OCP
-    ocp = make_ocp(dynamics=dynamics, robot=robot, nodes=nodes, tau_nodes=tau_nodes)
+    ocp = make_ocp(
+        dynamics=dynamics,
+        robot=robot,
+        nodes=nodes,
+        tau_nodes=tau_nodes,
+    )
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_tracking_targets(base_vel_des, ext_force_des, arm_vel_des)

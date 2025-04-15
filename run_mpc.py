@@ -140,7 +140,7 @@ def main():
         dynamics=dynamics,
         robot=robot,
         nodes=nodes,
-        include_base=include_base
+        include_base=include_base,
     )
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)

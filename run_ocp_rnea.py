@@ -44,7 +44,12 @@ def main():
     pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
     # Setup OCP
-    ocp = make_ocp(dynamics=dynamics, robot=robot, nodes=nodes, tau_nodes=tau_nodes)
+    ocp = make_ocp(
+        dynamics=dynamics,
+        robot=robot,
+        nodes=nodes,
+        tau_nodes=tau_nodes,
+    )
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
     ocp.set_tracking_targets(base_vel_des, ext_force_des, arm_vel_des)
@@ -135,7 +140,9 @@ def main():
                 f = np.concatenate((f_lin, f_ang))
                 f_ext[joint_id] = pin.Force(f)
 
+            # Both RNEA functions work!
             tau_rnea = pin.rnea(model, data, q, v, a, f_ext)
+            # tau_rnea = pin.rnea(model, data, q, v, a) - tau_ext
 
             tau_diff = tau_all - tau_rnea
             tau_b = tau_rnea[:6]
