@@ -166,21 +166,22 @@ class OCPWholeBodyAcc(OCP):
 
         for dx_sol, u_sol in zip(self.DX_prev, self.U_prev):
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
-            q_sol = np.array(x_sol[:self.nq])
-            v_sol = np.array(x_sol[self.nq:])
-            forces_sol = np.array(u_sol[self.f_idx:])
+            q = np.array(x_sol[:self.nq])
+            v = np.array(x_sol[self.nq:])
+            forces = np.array(u_sol[self.f_idx:])
             if self.include_base:
-                a_sol = np.array(u_sol[:self.na_opt])
+                a = np.array(u_sol[:self.na_opt])
             else:
-                a_j_sol = np.array(u_sol[:self.na_opt])
+                a_j = np.array(u_sol[:self.na_opt])
                 # Compute base acceleration from dynamics
-                a_b_sol = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q_sol, v_sol, a_j_sol, forces_sol)
-                a_sol = np.concatenate((a_b_sol, a_j_sol))
+                a_b = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+                a_b = np.array(a_b).flatten()
+                a = np.concatenate((a_b, a_j))
 
-            self.q_sol.append(q_sol)
-            self.v_sol.append(v_sol)
-            self.a_sol.append(a_sol)
-            self.forces_sol.append(forces_sol)
+            self.q_sol.append(q)
+            self.v_sol.append(v)
+            self.a_sol.append(a)
+            self.forces_sol.append(forces)
 
             if not retract_all:
                 return
@@ -201,21 +202,22 @@ class OCPWholeBodyAcc(OCP):
             self.U_prev.append(np.array(u_sol))
 
             if i == 0 or retract_all:
-                q_sol = np.array(x_sol[:self.nq])
-                v_sol = np.array(x_sol[self.nq:])
-                forces_sol = np.array(u_sol[self.f_idx:])
+                q = np.array(x_sol[:self.nq])
+                v = np.array(x_sol[self.nq:])
+                forces = np.array(u_sol[self.f_idx:])
                 if self.include_base:
-                    a_sol = np.array(u_sol[:self.na_opt])
+                    a = np.array(u_sol[:self.na_opt])
                 else:
-                    a_j_sol = np.array(u_sol[:self.na_opt])
+                    a_j = np.array(u_sol[:self.na_opt])
                     # Compute base acceleration from dynamics
-                    a_b_sol = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q_sol, v_sol, a_j_sol, forces_sol)
-                    a_sol = np.concatenate((a_b_sol, a_j_sol))
+                    a_b = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+                    a_b = np.array(a_b).flatten()
+                    a = np.concatenate((a_b, a_j))
 
-                self.q_sol.append(q_sol)
-                self.v_sol.append(v_sol)
-                self.a_sol.append(a_sol)
-                self.forces_sol.append(forces_sol)
+                self.q_sol.append(q)
+                self.v_sol.append(v)
+                self.a_sol.append(a)
+                self.forces_sol.append(forces)
 
         dx_last = sol_x[self.nodes*nx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)

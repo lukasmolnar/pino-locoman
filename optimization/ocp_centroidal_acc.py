@@ -210,6 +210,7 @@ class OCPCentroidalAcc(OCP):
                     a_j = np.array(u_sol[:self.na_opt])
                     # Compute base acceleration from dynamics
                     a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+                    a_b = np.array(a_b).flatten()
                     a = np.concatenate((a_b, a_j))
 
                 self.q_sol.append(q)

@@ -243,7 +243,7 @@ class OCP:
     def warm_start(self):
         pass
 
-    def init_solver(self, solver="fatrop", warm_start=False):
+    def init_solver(self, solver="fatrop"):
         self.solver_type = solver
 
         if solver == "fatrop":
@@ -262,17 +262,6 @@ class OCP:
                 "bound_push": 1e-7,
             }
             self.opti.solver(solver, opts)
-
-            # Params (as list for code generation)
-            self.solver_params = [self.x_init, self.dt_min, self.dt_max, self.contact_schedule, self.swing_schedule,
-                                  self.n_contacts, self.swing_period, self.swing_height, self.swing_vel_limits,
-                                  self.Q_diag, self.R_diag, self.base_vel_des]
-            if self.ext_force_frame:
-                self.solver_params += [self.ext_force_des]
-            if self.arm_ee_frame:
-                self.solver_params += [self.arm_vel_des]
-            if warm_start:
-                self.solver_params += [self.opti.x]
 
         elif solver == "osqp":
             # Get all info from self.opti
@@ -294,12 +283,39 @@ class OCP:
 
             # OSQP options
             self.osqp_opts = {
-                "max_iter": 100,
+                "max_iter": 200,
                 "alpha": 1.4,
                 "rho": 2e-2,
+                "warm_start": True,
+                "adaptive_rho": False,
             }
 
-            # Params (as stacked vector for data functions)
+        else:
+            raise ValueError(f"Solver {solver} not supported")
+        
+    def compile_solver(self):
+        self.solver_function = self.opti.to_function(
+            "compiled_solver",
+            self.solver_params,
+            [self.opti.x] # , self.opti.lam_g]  # output
+        )
+        self.solver_function.generate("compiled_solver.c")
+
+    def update_solver_params(self, warm_start):
+        if self.solver_type == "fatrop":
+            # Params as list for code generation
+            self.solver_params = [self.x_init, self.dt_min, self.dt_max, self.contact_schedule, self.swing_schedule,
+                                  self.n_contacts, self.swing_period, self.swing_height, self.swing_vel_limits,
+                                  self.Q_diag, self.R_diag, self.base_vel_des]
+            if self.ext_force_frame:
+                self.solver_params += [self.ext_force_des]
+            if self.arm_ee_frame:
+                self.solver_params += [self.arm_vel_des]
+            if warm_start:
+                self.solver_params += [self.opti.x]
+
+        elif self.solver_type == "osqp":
+            # Params as stacked vector for data functions
             self.solver_params = ca.vertcat(
                 self.opti.value(self.x_init),
                 self.opti.value(self.dt_min),
@@ -314,23 +330,10 @@ class OCP:
                 self.opti.value(self.R_diag),
                 self.opti.value(self.base_vel_des),
             )
-            if self.arm_id:
-                self.solver_params = ca.vertcat(
-                    self.solver_params,
-                    self.opti.value(self.arm_f_des),
-                    self.opti.value(self.arm_vel_des),
-                )
-
-        else:
-            raise ValueError(f"Solver {solver} not supported")
-        
-    def compile_solver(self):
-        self.solver_function = self.opti.to_function(
-            "compiled_solver",
-            self.solver_params,
-            [self.opti.x] # , self.opti.lam_g]  # output
-        )
-        self.solver_function.generate("compiled_solver.c")
+            if self.ext_force_frame:
+                self.solver_params = ca.vertcat(self.solver_params, self.opti.value(self.ext_force_des))
+            if self.arm_ee_frame:
+                self.solver_params = ca.vertcat(self.solver_params, self.opti.value(self.arm_vel_des))
 
     def solve(self, retract_all=True):
         if self.solver_type == "fatrop":
@@ -353,7 +356,7 @@ class OCP:
             start_time = time.time()
 
             # TODO: Termination condition
-            for _ in range(3):
+            for _ in range(1):
                 # OSQP
                 hess_f, grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, self.solver_params)
                 P = sparse.csc_matrix(hess_f)

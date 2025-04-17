@@ -7,7 +7,7 @@ from .ocp import OCP
 
 
 class OCPWholeBodyRNEA(OCP):
-    def __init__(self, robot, nodes, tau_nodes):
+    def __init__(self, robot, nodes, tau_nodes, include_acc=True):
         super().__init__(robot, nodes)
         self.tau_nodes = tau_nodes
 
@@ -18,6 +18,13 @@ class OCPWholeBodyRNEA(OCP):
 
         # Store solutions
         self.tau_sol = []
+
+        # Whether to include accelerations in the input (necessary for Fatrop solver)
+        self.include_acc = include_acc
+        if self.include_acc:
+            self.na_opt = self.nv
+        else:
+            self.na_opt = 0
 
     def set_weights(self):
         # State and input weights
@@ -42,7 +49,7 @@ class OCPWholeBodyRNEA(OCP):
 
         Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
         R_diag = np.concatenate((
-            [1e-3] * self.nv,  # accelerations
+            [1e-3] * self.na_opt,  # accelerations
             [1e-3] * self.nf,  # forces
             [1e-4] * self.nj,  # joint torques
         ))
@@ -63,11 +70,11 @@ class OCPWholeBodyRNEA(OCP):
 
         # Input size: Adaptive for each node
         self.nu_opt = (
-            [self.nv + self.nf + self.nj] * self.tau_nodes +  # accelerations + forces + torques
-            [self.nv + self.nf] * (self.nodes - self.tau_nodes)  # accelerations + forces
+            [self.na_opt + self.nf + self.nj] * self.tau_nodes +  # accelerations + forces + torques
+            [self.na_opt + self.nf] * (self.nodes - self.tau_nodes)  # accelerations + forces
         )
-        self.f_idx = self.nv  # start index for forces
-        self.tau_idx = self.nv + self.nf  # start index for torques
+        self.f_idx = self.na_opt  # start index for forces
+        self.tau_idx = self.f_idx + self.nf  # start index for torques
 
         # Decision variables
         self.DX_opt = []
@@ -97,7 +104,7 @@ class OCPWholeBodyRNEA(OCP):
             self.f_des = ca.vertcat(self.f_des, [0] * 3)  # zero force at end-effector
 
         # Desired input: Use this for warm starting
-        self.u_des = ca.vertcat([0] * self.nv, self.f_des, [0] * self.nj)  # zero acc + torque
+        self.u_des = ca.vertcat([0] * self.na_opt, self.f_des, [0] * self.nj)  # zero acc + torque
 
     def setup_objective(self):
         obj = 0
@@ -146,7 +153,9 @@ class OCPWholeBodyRNEA(OCP):
         dq_next = dx_next[:self.nv]
         dv_next = dx_next[self.nv:]
         self.opti.subject_to(dq_next == dq + v * dt + 0.5 * a * dt**2)
-        self.opti.subject_to(dv_next == dv + a * dt)
+        if self.include_acc:
+            # Otherwise a inherently uses this finite difference
+            self.opti.subject_to(dv_next == dv + a * dt)
 
         # RNEA constraint
         tau_rnea = self.dyn.rnea_dynamics(self.ext_force_frame)(q, v, a, forces)
@@ -172,7 +181,14 @@ class OCPWholeBodyRNEA(OCP):
         return x[self.nq:]
 
     def get_acc(self, i):
-        return self.U_opt[i][:self.f_idx]
+        if self.include_acc:
+            a = self.U_opt[i][:self.na_opt]
+        else:
+            # Finite difference
+            v = self.get_v(i)
+            v_next = self.get_v(i + 1)
+            a = (v_next - v) / self.dts[i]
+        return a
 
     def get_forces(self, i):
         return self.U_opt[i][self.f_idx:self.tau_idx]
@@ -202,7 +218,7 @@ class OCPWholeBodyRNEA(OCP):
                 # Previous solution for acc, tau
                 # Tracking target for f (gravity compensation)
                 u_prev = self.U_prev[i]
-                a_prev = u_prev[:self.f_idx]
+                a_prev = u_prev[:self.na_opt]
                 f_des = self.opti.value(self.f_des)
                 u_warm = ca.vertcat(a_prev, f_des)
                 if i < self.tau_nodes:
@@ -213,22 +229,19 @@ class OCPWholeBodyRNEA(OCP):
         if self.lam_g is not None:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
 
-    def init_solver(self, solver="fatrop", warm_start=False):
-        super().init_solver(solver, warm_start)
+    def update_solver_params(self, warm_start):
+        super().update_solver_params(warm_start)
 
         # Add RNEA specific parameters
-        if solver == "fatrop":
+        if self.solver_type == "fatrop":
             self.solver_params += [self.tau_prev, self.W_diag]
 
-        elif solver == "osqp":
+        elif self.solver_type == "osqp":
             self.solver_params = ca.vertcat(
                 self.solver_params,
                 self.opti.value(self.tau_prev),
                 self.opti.value(self.W_diag),
             )
-
-        else:
-            raise ValueError(f"Solver {solver} not supported")
 
     def retract_opti_sol(self, retract_all=True):
         # Retract self.opti solution stored in self.sol
@@ -241,7 +254,7 @@ class OCPWholeBodyRNEA(OCP):
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
             self.q_sol.append(np.array(x_sol[:self.nq]))
             self.v_sol.append(np.array(x_sol[self.nq:]))
-            self.a_sol.append(np.array(u_sol[:self.f_idx]))
+            self.a_sol.append(np.array(u_sol[:self.na_opt]))
             self.forces_sol.append(np.array(u_sol[self.f_idx:self.tau_idx]))
             self.tau_sol.append(np.array(u_sol[self.tau_idx:]))
 
@@ -273,7 +286,7 @@ class OCPWholeBodyRNEA(OCP):
             if i == 0 or retract_all:
                 self.q_sol.append(np.array(x_sol[:self.nq]))
                 self.v_sol.append(np.array(x_sol[self.nq:]))
-                self.a_sol.append(np.array(u_sol[:self.f_idx]))
+                self.a_sol.append(np.array(u_sol[:self.na_opt]))
                 self.forces_sol.append(np.array(u_sol[self.f_idx:self.tau_idx]))
                 self.tau_sol.append(np.array(u_sol[self.tau_idx:]))
 

@@ -205,6 +205,7 @@ class OCPCentroidalVel(OCP):
                     v_j = np.array(u_sol[:self.nv_opt])
                     # Compute base velocity from dynamics
                     v_b = self.dyn.base_vel_dynamics()(h, q, v_j)
+                    v_b = np.array(v_b).flatten()
                     v = np.concatenate((v_b, v_j))
 
                 self.q_sol.append(q)

@@ -31,9 +31,9 @@ swing_vel_limits = [0.1, -0.2]
 mpc_loops = 100
 
 # Solver
-solver = "fatrop"
+solver = "osqp"
 warm_start = True
-compile_solver = True
+compile_solver = False
 load_compiled_solver = None
 # load_compiled_solver = "libsolver_b2_wb_aj_N14.so"
 
@@ -109,7 +109,14 @@ def mpc_loop(ocp, robot_instance):
 
     else:
         # Initialize solver
-        ocp.init_solver(solver, warm_start)
+        ocp.init_solver(solver)
+
+        # Initialize params
+        ocp.update_initial_state(x_init)
+        ocp.update_gait_sequence(t_current=0)
+        if dynamics == "whole_body_rnea":
+            ocp.update_previous_torques(tau_prev)
+        ocp.update_solver_params(warm_start)
 
         for k in range(mpc_loops):
             # Update parameters
@@ -120,6 +127,7 @@ def mpc_loop(ocp, robot_instance):
                 ocp.warm_start()
             if dynamics == "whole_body_rnea":
                 ocp.update_previous_torques(tau_prev)
+            ocp.update_solver_params(warm_start)
 
             # Solve
             ocp.solve(retract_all=False)
@@ -165,6 +173,9 @@ def main():
 
     # Run MPC
     ocp = mpc_loop(ocp, robot_instance)
+
+    T = sum([ocp.opti.value(dt) for dt in ocp.dts])
+    print("Horizon length (s): ", T)
 
     if debug:
         print("************** DEBUG **************")

@@ -9,7 +9,7 @@ from ocp_args import OCP_ARGS
 # Parameters
 robot = B2(reference_pose="standing", payload=None)
 # robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
-dynamics = "whole_body_rnea"
+dynamics = "centroidal_vel"
 gait_type = "trot"
 gait_period = 0.8
 nodes = 14
@@ -26,10 +26,10 @@ swing_height = 0.07
 swing_vel_limits = [0.1, -0.2]
 
 # Solver
-solver = "fatrop"
+solver = "osqp"
 compile_solver = False
 
-debug = True  # print info
+debug = False  # print info
 
 
 def main():
@@ -99,6 +99,9 @@ def main():
 
     print("Solve time (ms):", ocp.solve_time * 1000)
 
+    T = sum([ocp.opti.value(dt) for dt in ocp.dts])
+    print("Horizon length (s): ", T)
+
     if debug:
         print("************** DEBUG **************")
         tau_diffs = []
@@ -155,9 +158,6 @@ def main():
         print("Std tau_diff: ", np.std(tau_diffs))
         print("Avg tau_b_norm: ", np.mean(tau_b_norms))
         print("Std tau_b_norm: ", np.std(tau_b_norms))
-
-    T = sum([ocp.opti.value(dt) for dt in ocp.dts])
-    print("Horizon length (s): ", T)
 
     # Visualize
     robot_instance.initViewer()
