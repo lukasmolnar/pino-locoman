@@ -28,7 +28,7 @@ python run_mpc.py
 
 In the example files define:
 - Robot: B2, B2G (with Z1 arm), Go2
-- Dynamics: centroidal_vel, centroidal_acc, whole_body_acc (RNEA has a separate script)
+- Dynamics: centroidal_vel, centroidal_acc, whole_body_acc, whole_body_rnea, whole_body_aba
 - Gait: Type and period
 - Targets: Base velocity (linear + angular), external force, end-effector velocity (linear)
 - Swing params: Max height and takeoff/touchdown velocities
@@ -42,7 +42,7 @@ These are the following dynamics choices for the OCP:
 
 ![alt text](utils/images/dynamics_models.png)
 
-Note: the "full" dynamics option is chosen with `include_base=True` in the example scripts. This makes the base variable part of the input, even though it is un-actuated. The dynamics are then ensured using a path constraint on each node, rather than propagating the base dynamics through the state.
+The file `ocp_args.py` contains additional arguments for each dynamics choice. For example, `include_base=True` adds the base variable to the input (for the velocity and acceleration formulations). The dynamics are then ensured through a path constraint on each node, rather than propagating the base dynamics through the state.
 
 ## Solvers
 
