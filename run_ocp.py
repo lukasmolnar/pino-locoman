@@ -4,12 +4,12 @@ import pinocchio as pin
 
 from utils.robot import *
 from optimization import make_ocp
+from ocp_args import OCP_ARGS
 
 # Parameters
 robot = B2(reference_pose="standing", payload=None)
 # robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
-dynamics = "whole_body_acc"
-include_base = True
+dynamics = "whole_body_rnea"
 gait_type = "trot"
 gait_period = 0.8
 nodes = 14
@@ -27,7 +27,7 @@ swing_vel_limits = [0.1, -0.2]
 
 # Solver
 solver = "fatrop"
-compile_solver = True
+compile_solver = False
 
 debug = True  # print info
 
@@ -44,11 +44,12 @@ def main():
     pin.computeAllTerms(model, data, q0, np.zeros(model.nv))
 
     # Setup OCP
+    default_args = OCP_ARGS[dynamics]
     ocp = make_ocp(
         dynamics=dynamics,
+        default_args=default_args,
         robot=robot,
         nodes=nodes,
-        include_base=include_base,
     )
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
@@ -56,6 +57,9 @@ def main():
 
     x_init = ocp.x_nom
     t_current = 0
+    if dynamics == "whole_body_rnea":
+        tau_prev = np.zeros(robot.nj)  # previous torque solution
+        ocp.update_previous_torques(tau_prev)
 
     ocp.update_initial_state(x_init)
     ocp.update_gait_sequence(t_current)
@@ -71,6 +75,8 @@ def main():
         swing_period = ocp.opti.value(ocp.swing_period)
         Q_diag = ocp.opti.value(ocp.Q_diag)
         R_diag = ocp.opti.value(ocp.R_diag)
+        if dynamics == "whole_body_rnea":
+            W_diag = ocp.opti.value(ocp.W_diag)  # weights on previous torque solution
 
         params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts,
                   swing_period, swing_height, swing_vel_limits, Q_diag, R_diag, base_vel_des]
@@ -79,6 +85,8 @@ def main():
             params += [ext_force_des]
         if ocp.arm_ee_frame:
             params += [arm_vel_des]
+        if dynamics == "whole_body_rnea":
+            params += [tau_prev, W_diag]
 
         start_time = time.time()
         sol_x = ocp.solver_function(*params)

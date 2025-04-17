@@ -6,12 +6,12 @@ import matplotlib.pyplot as plt
 
 from utils.robot import *
 from optimization import make_ocp
+from ocp_args import OCP_ARGS
 
 # Parameters
 robot = B2(reference_pose="standing", payload=None)
 # robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
-dynamics ="whole_body_acc"
-include_base = True
+dynamics ="whole_body_rnea"
 gait_type = "trot"
 gait_period = 0.8
 nodes = 14
@@ -44,6 +44,8 @@ plot = False
 def mpc_loop(ocp, robot_instance):
     x_init = ocp.x_nom
     solve_times = []
+    if dynamics == "whole_body_rnea":
+        tau_prev = np.zeros(robot.nj)  # previous torque solution
 
     if solver == "fatrop" and compile_solver:
         if load_compiled_solver:
@@ -55,9 +57,14 @@ def mpc_loop(ocp, robot_instance):
             ocp.compile_solver()
             solver_function = ocp.solver_function
 
+        # Warm start (dual variables)
+        # lam_g_warm_start = ocp.opti.value(ocp.opti.lam_g, ocp.opti.initial())
+
         # Fixed parameters
         Q_diag = ocp.opti.value(ocp.Q_diag)
         R_diag = ocp.opti.value(ocp.R_diag)
+        if dynamics == "whole_body_rnea":
+            W_diag = ocp.opti.value(ocp.W_diag)  # weights on previous torque solution
 
         for k in range(mpc_loops):
             # Update parameters
@@ -80,6 +87,8 @@ def mpc_loop(ocp, robot_instance):
                 ocp.warm_start()
                 x_warm_start = ocp.opti.value(ocp.opti.x, ocp.opti.initial())
                 params += [x_warm_start]
+            if dynamics == "whole_body_rnea":
+                params += [tau_prev, W_diag]
 
             # Solve
             start_time = time.time()
@@ -92,26 +101,33 @@ def mpc_loop(ocp, robot_instance):
 
             # Retract solution and update x_init
             ocp.retract_stacked_sol(sol_x, retract_all=False)
-            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])  # TODO: simulate step
+            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+            if dynamics == "whole_body_rnea":
+                tau_prev = ocp.get_tau_sol(i=1)  # solution for the next time step
 
-            robot_instance.display(ocp.q_sol[-1])  # Display last q
+            robot_instance.display(ocp.q_sol[-1])  # display last q
 
     else:
         # Initialize solver
-        ocp.init_solver(solver=solver, compile_solver=compile_solver)
+        ocp.init_solver(solver, warm_start)
 
         for k in range(mpc_loops):
+            # Update parameters
             t_current = k * dt_min
             ocp.update_initial_state(x_init)
             ocp.update_gait_sequence(t_current)
             if warm_start:
                 ocp.warm_start()
+            if dynamics == "whole_body_rnea":
+                ocp.update_previous_torques(tau_prev)
 
+            # Solve
             ocp.solve(retract_all=False)
             solve_times.append(ocp.solve_time)
 
-            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])  # TODO: simulate step
-            robot_instance.display(ocp.q_sol[-1])  # Display last q
+            # Update x_init
+            x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
+            robot_instance.display(ocp.q_sol[-1])  # display last q
 
     print("Avg solve time (ms): ", np.average(solve_times) * 1000)
     print("Std solve time (ms): ", np.std(solve_times) * 1000)
@@ -136,11 +152,12 @@ def main():
     robot_instance.display(q0)
 
     # Setup OCP
+    default_args = OCP_ARGS[dynamics]
     ocp = make_ocp(
         dynamics=dynamics,
+        default_args=default_args,
         robot=robot,
         nodes=nodes,
-        include_base=include_base,
     )
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)

@@ -2,16 +2,16 @@ import numpy as np
 import casadi as ca
 import pinocchio as pin
 
-from dynamics import DynamicsRNEA
+from dynamics import DynamicsWholeBodyTorque
 from .ocp import OCP
 
 
-class OCP_RNEA(OCP):
+class OCPWholeBodyRNEA(OCP):
     def __init__(self, robot, nodes, tau_nodes):
         super().__init__(robot, nodes)
         self.tau_nodes = tau_nodes
 
-        self.dyn = DynamicsRNEA(self.model, self.mass, self.foot_frames)
+        self.dyn = DynamicsWholeBodyTorque(self.model, self.mass, self.foot_frames)
 
         # Nominal State
         self.x_nom = np.concatenate((self.robot.q0, [0] * self.nv))  # joint pos + vel
@@ -37,7 +37,7 @@ class OCP_RNEA(OCP):
             [1000],  # base lin z
             [1000] * 2,  # base ang x/y
             [2000],  # base ang z
-            [2] * self.nj,  # joint vel (all of them)
+            [1] * self.nj,  # joint vel (all of them)
         ))
 
         Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
@@ -149,7 +149,7 @@ class OCP_RNEA(OCP):
         self.opti.subject_to(dv_next == dv + a * dt)
 
         # RNEA constraint
-        tau_rnea = self.dyn.tau_dynamics(self.ext_force_frame)(q, v, a, forces)
+        tau_rnea = self.dyn.rnea_dynamics(self.ext_force_frame)(q, v, a, forces)
         self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
 
         # Torque constraints
@@ -284,39 +284,3 @@ class OCP_RNEA(OCP):
         if retract_all:
             self.q_sol.append(np.array(x_last[:self.nq]))
             self.v_sol.append(np.array(x_last[self.nq:]))
-
-    def simulate_step(self, x_init, u):
-        q = x_init[:self.nq]
-        v = x_init[self.nq:]
-        forces = u[self.f_idx:self.tau_idx]
-        tau_j = u[self.tau_idx:]
-        dt_sim = self.opti.value(self.dt_min)  # the first step size
-
-        ee_frames = self.foot_frames.copy()
-        if self.arm_ee_frame:
-            ee_frames.append(self.arm_ee_frame)
-
-        pin.framesForwardKinematics(self.model, self.data, q)
-        f_ext = [pin.Force(np.zeros(6)) for _ in range(self.model.njoints)]
-        for idx, frame_id in enumerate(ee_frames):
-            joint_id = self.model.frames[frame_id].parentJoint
-            translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation
-            rotation_world_to_joint_frame = self.data.oMi[joint_id].rotation.T
-            f_world = forces[idx * 3 : (idx + 1) * 3].flatten()
-
-            f_lin = rotation_world_to_joint_frame @ f_world
-            f_ang = np.cross(translation_joint_to_contact_frame, f_lin)
-            f = np.concatenate((f_lin, f_ang))
-            f_ext[joint_id] = pin.Force(f)
-
-        tau = np.concatenate((np.zeros(6), tau_j.flatten()))
-        a = pin.aba(self.model, self.data, q, v, tau, f_ext)
-
-        dq = v * dt_sim + 0.5 * a * dt_sim**2
-        dv = a * dt_sim
-
-        q_next = pin.integrate(self.model, q, dq)
-        v_next = v + dv
-        x_next = np.concatenate((q_next, v_next))
-
-        return x_next
