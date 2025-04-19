@@ -9,8 +9,8 @@ from optimization import make_ocp
 from ocp_args import OCP_ARGS
 
 # Parameters
-robot = B2(reference_pose="standing", payload=None)
-# robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
+# robot = B2(reference_pose="standing", payload=None)
+robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 dynamics ="whole_body_rnea"
 gait_type = "trot"
 gait_period = 0.8
@@ -31,14 +31,14 @@ swing_vel_limits = [0.1, -0.2]
 mpc_loops = 100
 
 # Solver
-solver = "osqp"
+solver = "fatrop"
 warm_start = True
-compile_solver = False
+compile_solver = True
 load_compiled_solver = None
 # load_compiled_solver = "libsolver_b2_wb_aj_N14.so"
 
-debug = False  # print info
-plot = False
+debug = True  # print info
+plot = True
 
 
 def mpc_loop(ocp, robot_instance):
@@ -53,7 +53,7 @@ def mpc_loop(ocp, robot_instance):
             solver_function = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
         else:
             # Initialize solver and compile it
-            ocp.init_solver(solver, warm_start)
+            ocp.init_solver(warm_start)
             ocp.compile_solver()
             solver_function = ocp.solver_function
 
@@ -113,10 +113,9 @@ def mpc_loop(ocp, robot_instance):
         ocp.update_gait_sequence(t_current=0)
         if dynamics == "whole_body_rnea":
             ocp.update_previous_torques(tau_prev)
-        ocp.update_solver_params(warm_start)
 
         # Initialize solver
-        ocp.init_solver()
+        ocp.init_solver(warm_start)
 
         for k in range(mpc_loops):
             # Update parameters
@@ -127,7 +126,6 @@ def mpc_loop(ocp, robot_instance):
                 ocp.warm_start()
             if dynamics == "whole_body_rnea":
                 ocp.update_previous_torques(tau_prev)
-            ocp.update_solver_params(warm_start)
 
             # Solve
             ocp.solve(retract_all=False)

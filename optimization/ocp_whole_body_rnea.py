@@ -1,6 +1,5 @@
 import numpy as np
 import casadi as ca
-import pinocchio as pin
 
 from dynamics import DynamicsWholeBodyTorque
 from .ocp import OCP
@@ -234,8 +233,8 @@ class OCPWholeBodyRNEA(OCP):
         if self.lam_g is not None:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
 
-    def update_solver_params(self, warm_start):
-        super().update_solver_params(warm_start)
+    def init_solver_params(self, warm_start):
+        super().init_solver_params(warm_start)
 
         # Add RNEA specific parameters
         if self.solver == "fatrop":
@@ -302,3 +301,45 @@ class OCPWholeBodyRNEA(OCP):
         if retract_all:
             self.q_sol.append(np.array(x_last[:self.nq]))
             self.v_sol.append(np.array(x_last[self.nq:]))
+
+    def compile_solution(self, num_steps=3):
+        # Compile the first num_steps of the solution, to easily load on hardware
+        sol_x = ca.MX.sym("sol_x", self.opti.x.size()[0])
+        x_init = ca.MX.sym("x_init", self.nx)
+
+        q_sol, v_sol, a_sol, forces_sol, tau_sol = [], [], [], [], []
+        idx = 0
+
+        for i in range(num_steps):
+            nx_opt = self.ndx_opt + self.nu_opt[i]
+            sol = sol_x[idx : idx + nx_opt]
+            idx += nx_opt
+
+            dx_sol = sol[:self.ndx_opt]
+            u_sol = sol[self.ndx_opt:]
+            x_sol = self.dyn.state_integrate()(x_init, dx_sol)
+
+            q_sol.append(x_sol[:self.nq])
+            v_sol.append(x_sol[self.nq:])
+            a_sol.append(u_sol[:self.na_opt])
+            forces_sol.append(u_sol[self.f_idx:self.tau_idx])
+            tau_sol.append(u_sol[self.tau_idx:])
+
+        # Stack lists into outputs
+        q_out = ca.horzcat(*q_sol).T
+        v_out = ca.horzcat(*v_sol).T
+        a_out = ca.horzcat(*a_sol).T
+        forces_out = ca.horzcat(*forces_sol).T
+        tau_out = ca.horzcat(*tau_sol).T
+
+        # Create function
+        retract_function = ca.Function(
+            "retract_solution",
+            [sol_x, x_init],
+            [q_out, v_out, a_out, forces_out, tau_out],
+            ["sol_x", "x_init"],
+            ["q", "v", "a", "forces", "tau"]
+        )
+
+        # Generate C code
+        retract_function.generate("retract_solution.c")

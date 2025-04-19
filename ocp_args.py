@@ -2,13 +2,13 @@
 # Default OCP arguments for each dynamics method
 OCP_ARGS = {
     "centroidal_vel": {
-        "include_base": False,  # whether base velocity is part of the input
+        "include_base": True,  # whether base velocity is part of the input
     },
     "centroidal_acc": {
-        "include_base": False,  # whether base acceleration is part of the input
+        "include_base": True,  # whether base acceleration is part of the input
     },
     "whole_body_acc": {
-        "include_base": False,  # whether base acceleration is part of the input
+        "include_base": True,  # whether base acceleration is part of the input
     },
     "whole_body_aba": {
         # the input just contains joint torques

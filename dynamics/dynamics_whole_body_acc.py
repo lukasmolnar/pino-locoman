@@ -40,7 +40,7 @@ class DynamicsWholeBodyAcc(Dynamics):
 
         return ca.Function("difference", [x0, x1], [dx], ["x0", "x1"], ["dx"])
 
-    def base_acceleration_dynamics(self, ext_force_frame=None):
+    def base_acc_dynamics(self, ext_force_frame=None):
         q = ca.SX.sym("q", self.nq)  # positions
         v = ca.SX.sym("v", self.nv)  # velocities
         a_j = ca.SX.sym("a", self.nj)  # joint accelerations

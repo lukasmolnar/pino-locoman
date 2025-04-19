@@ -88,6 +88,51 @@ class DynamicsCentroidalVel(Dynamics):
 
         return ca.Function("base_vel", [h, q, v_j], [v_b], ["h", "q", "v_j"], ["v_b"])
 
+    def base_acc_dynamics(self, ext_force_frame=None):
+        """
+        Special case: When computing the accelerations from the solution,
+        we want this instead of finite differences.
+        """
+        q = ca.SX.sym("q", self.nq)  # positions
+        v = ca.SX.sym("v", self.nv)  # velocities
+        a_j = ca.SX.sym("a_j", self.nj)  # joint accelerations
+
+        # End-effector forces
+        nf = len(self.foot_frames)
+        if ext_force_frame:
+            nf += 1
+        f_e = [ca.SX.sym(f"f_e_{i}", 3) for i in range(nf)]
+        forces = ca.vertcat(*f_e)
+
+        # Pinocchio terms
+        cpin.forwardKinematics(self.model, self.data, q)
+        cpin.updateFramePlacements(self.model, self.data)
+        r_com = cpin.centerOfMass(self.model, self.data)
+        A = cpin.computeCentroidalMap(self.model, self.data, q)
+        Adot = cpin.dccrba(self.model, self.data, q, v)
+
+        # COM Dynamics
+        g = np.array([0, 0, -9.81 * self.mass])
+        dp_com = sum(f_e) + g
+        dl_com = ca.SX.zeros(3)
+        for idx, frame_id in enumerate(self.foot_frames):
+            r_ee = self.data.oMf[frame_id].translation - r_com
+            dl_com += ca.cross(r_ee, f_e[idx])
+        if ext_force_frame:
+            r_ee = self.data.oMf[ext_force_frame].translation - r_com
+            dl_com += ca.cross(r_ee, f_e[-1])
+
+        dh = ca.vertcat(dp_com, dl_com)
+
+        # Base acceleration dynamics
+        A_j = A[:, 6:]
+        A_b = A[:, :6]
+        # A_b_inv = self._compute_Ab_inv(A_b)
+        A_b_inv = ca.inv(A_b)
+        a_b = A_b_inv @ (dh - Adot @ v - A_j @ a_j)
+
+        return ca.Function("base_acc", [q, v, a_j, forces], [a_b], ["q", "v", "a_j", "forces"], ["a_b"])
+
     def dynamics_gaps(self):
         h = ca.SX.sym("h", 6)  # COM momentum
         q = ca.SX.sym("q", self.nq)  # positions

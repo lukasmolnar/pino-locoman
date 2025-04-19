@@ -1,5 +1,6 @@
 import numpy as np
 import casadi as ca
+import pinocchio as pin
 
 from dynamics import DynamicsWholeBodyAcc
 from .ocp import OCP
@@ -129,7 +130,7 @@ class OCPWholeBodyAcc(OCP):
             q = self.get_q(i)
             v = self.get_v(i)
             forces = self.get_forces(i)
-            a_b = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+            a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
             a = ca.vertcat(a_b, a_j)
         return a
 
@@ -179,7 +180,7 @@ class OCPWholeBodyAcc(OCP):
             else:
                 a_j = np.array(u_sol[:self.na_opt])
                 # Compute base acceleration from dynamics
-                a_b = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+                a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
                 a_b = np.array(a_b).flatten()
                 a = np.concatenate((a_b, a_j))
 
@@ -215,7 +216,7 @@ class OCPWholeBodyAcc(OCP):
                 else:
                     a_j = np.array(u_sol[:self.na_opt])
                     # Compute base acceleration from dynamics
-                    a_b = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+                    a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
                     a_b = np.array(a_b).flatten()
                     a = np.concatenate((a_b, a_j))
 
@@ -231,3 +232,57 @@ class OCPWholeBodyAcc(OCP):
         if retract_all:
             self.q_sol.append(np.array(x_last[:self.nq]))
             self.v_sol.append(np.array(x_last[self.nq:]))
+
+    def compile_solution(self, num_steps=3):
+        # Compile the first num_steps of the solution, to easily load on hardware
+        sol_x = ca.MX.sym("sol_x", self.opti.x.size()[0])
+        x_init = ca.MX.sym("x_init", self.nx)
+        nx_opt = self.ndx_opt + self.nu_opt[0]  # nu_opt is constant
+
+        q_sol, v_sol, a_sol, forces_sol, tau_sol = [], [], [], [], []
+
+        for i in range(num_steps):
+            sol = sol_x[i*nx_opt : (i+1)*nx_opt]
+            dx_sol = sol[:self.ndx_opt]
+            u_sol = sol[self.ndx_opt:]
+            x_sol = self.dyn.state_integrate()(x_init, dx_sol)
+
+            q = x_sol[:self.nq]
+            v = x_sol[self.nq:]
+            forces = u_sol[self.f_idx:]
+            if self.include_base:
+                a = u_sol[:self.na_opt]
+            else:
+                a_j = u_sol[:self.na_opt]
+                # Compute base acceleration from dynamics
+                a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+                a = ca.vertcat(a_b, a_j)
+
+            # Compute torques
+            tau_rnea = self.dyn.rnea_dynamics(self.ext_force_frame)(q, v, a, forces)
+            tau_j = tau_rnea[6:]  # just joints
+
+            q_sol.append(q)
+            v_sol.append(v)
+            a_sol.append(a)
+            forces_sol.append(forces)
+            tau_sol.append(tau_j)
+
+        # Stack lists into outputs
+        q_out = ca.horzcat(*q_sol).T
+        v_out = ca.horzcat(*v_sol).T
+        a_out = ca.horzcat(*a_sol).T
+        forces_out = ca.horzcat(*forces_sol).T
+        tau_out = ca.horzcat(*tau_sol).T
+
+        # Create function
+        retract_function = ca.Function(
+            "retract_solution",
+            [sol_x, x_init],
+            [q_out, v_out, a_out, forces_out, tau_out],
+            ["sol_x", "x_init"],
+            ["q", "v", "a", "forces", "tau"]
+        )
+
+        # Generate C code
+        retract_function.generate("retract_solution.c")

@@ -241,44 +241,12 @@ class OCP:
         self.opti.set_value(self.n_contacts, n_contacts)
         self.opti.set_value(self.swing_period, swing_period)
 
-    def update_solver_params(self, warm_start):
-        if self.solver == "fatrop":
-            # Params as list for code generation
-            self.solver_params = [self.x_init, self.dt_min, self.dt_max, self.contact_schedule, self.swing_schedule,
-                                  self.n_contacts, self.swing_period, self.swing_height, self.swing_vel_limits,
-                                  self.Q_diag, self.R_diag, self.base_vel_des]
-            if self.ext_force_frame:
-                self.solver_params += [self.ext_force_des]
-            if self.arm_ee_frame:
-                self.solver_params += [self.arm_vel_des]
-            if warm_start:
-                self.solver_params += [self.opti.x]
-
-        elif self.solver == "osqp":
-            # Params as stacked vector for data functions
-            self.solver_params = ca.vertcat(
-                self.opti.value(self.x_init),
-                self.opti.value(self.dt_min),
-                self.opti.value(self.dt_max),
-                ca.vec(self.opti.value(self.contact_schedule)),  # flattened
-                ca.vec(self.opti.value(self.swing_schedule)),  # flattened
-                self.opti.value(self.n_contacts),
-                self.opti.value(self.swing_period),
-                self.opti.value(self.swing_height),
-                self.opti.value(self.swing_vel_limits),
-                self.opti.value(self.Q_diag),
-                self.opti.value(self.R_diag),
-                self.opti.value(self.base_vel_des),
-            )
-            if self.ext_force_frame:
-                self.solver_params = ca.vertcat(self.solver_params, self.opti.value(self.ext_force_des))
-            if self.arm_ee_frame:
-                self.solver_params = ca.vertcat(self.solver_params, self.opti.value(self.arm_vel_des))
-
     def warm_start(self):
         pass
 
-    def init_solver(self):
+    def init_solver(self, warm_start):
+        self.init_solver_params(warm_start)
+
         if self.solver == "fatrop":
             opts = {
                 "expand": True,
@@ -349,6 +317,40 @@ class OCP:
         else:
             raise ValueError(f"Solver {self.solver} not supported")
 
+    def init_solver_params(self, warm_start):
+        if self.solver == "fatrop":
+            # Params as list for code generation
+            self.solver_params = [self.x_init, self.dt_min, self.dt_max, self.contact_schedule, self.swing_schedule,
+                                  self.n_contacts, self.swing_period, self.swing_height, self.swing_vel_limits,
+                                  self.Q_diag, self.R_diag, self.base_vel_des]
+            if self.ext_force_frame:
+                self.solver_params += [self.ext_force_des]
+            if self.arm_ee_frame:
+                self.solver_params += [self.arm_vel_des]
+            if warm_start:
+                self.solver_params += [self.opti.x]
+
+        elif self.solver == "osqp":
+            # Params as stacked vector for data functions
+            self.solver_params = ca.vertcat(
+                self.opti.value(self.x_init),
+                self.opti.value(self.dt_min),
+                self.opti.value(self.dt_max),
+                ca.vec(self.opti.value(self.contact_schedule)),  # flattened
+                ca.vec(self.opti.value(self.swing_schedule)),  # flattened
+                self.opti.value(self.n_contacts),
+                self.opti.value(self.swing_period),
+                self.opti.value(self.swing_height),
+                self.opti.value(self.swing_vel_limits),
+                self.opti.value(self.Q_diag),
+                self.opti.value(self.R_diag),
+                self.opti.value(self.base_vel_des),
+            )
+            if self.ext_force_frame:
+                self.solver_params = ca.vertcat(self.solver_params, self.opti.value(self.ext_force_des))
+            if self.arm_ee_frame:
+                self.solver_params = ca.vertcat(self.solver_params, self.opti.value(self.arm_vel_des))
+
     def compile_solver(self):
         if self.solver == "fatrop":
             # Generate solver function that directly outputs the solution
@@ -368,10 +370,15 @@ class OCP:
             # Store hessian diagonal array
             np.savetxt("codegen/hess_diag.txt", self.hess_diag)
 
+        self.compile_solution(num_steps=3)
+
+    def compile_solution(self, num_steps):
+        """Compile the first num_steps of the solution, to easily load on hardware."""
+        pass
+
     def solve(self, retract_all=True):
         if self.solver == "fatrop":
             print("***************** FATROP *****************")
-
             try:
                 self.sol = self.opti.solve()
             except:  # noqa: E722
@@ -387,7 +394,6 @@ class OCP:
 
         elif self.solver == "osqp":
             print("***************** OSQP *****************")
-
             # Initial guess
             current_x = self.opti.value(self.opti.x, self.opti.initial())
             start_time = time.time()
