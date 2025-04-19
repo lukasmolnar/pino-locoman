@@ -54,7 +54,7 @@ class DynamicsWholeBodyTorque(Dynamics):
         cpin.framesForwardKinematics(self.model, self.data, q)
         f_ext = [cpin.Force(ca.SX.zeros(6)) for _ in range(self.model.njoints)]
         for idx, frame_id in enumerate(ee_frames):
-            # TODO: Check this. it is from OCS2.
+            # OCS2 implementation
             joint_id = self.model.frames[frame_id].parentJoint
             translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation
             rotation_world_to_joint_frame = self.data.oMi[joint_id].rotation.T
@@ -86,7 +86,7 @@ class DynamicsWholeBodyTorque(Dynamics):
         cpin.framesForwardKinematics(self.model, self.data, q)
         f_ext = [cpin.Force(ca.SX.zeros(6)) for _ in range(self.model.njoints)]
         for idx, frame_id in enumerate(ee_frames):
-            # TODO: Check this. it is from OCS2.
+            # OCS2 implementation
             joint_id = self.model.frames[frame_id].parentJoint
             translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation
             rotation_world_to_joint_frame = self.data.oMi[joint_id].rotation.T

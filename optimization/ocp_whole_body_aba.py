@@ -6,8 +6,8 @@ from .ocp import OCP
 
 
 class OCPWholeBodyABA(OCP):
-    def __init__(self, robot, nodes):
-        super().__init__(robot, nodes)
+    def __init__(self, robot, solver, nodes):
+        super().__init__(robot, solver, nodes)
 
         # Dynamics
         self.dyn = DynamicsWholeBodyTorque(self.model, self.mass, self.foot_frames)
@@ -122,21 +122,26 @@ class OCPWholeBodyABA(OCP):
         return self.U_opt[i][self.f_idx:]
 
     def warm_start(self):
-        # TODO: Look into interpolating
+        # Previous solution for dx
         if self.DX_prev is not None:
             for i in range(self.nodes + 1):
-                # Previous solution for dx
                 dx_prev = self.DX_prev[i]
                 self.opti.set_initial(self.DX_opt[i], dx_prev)
                 continue
 
+        # Previous solution for tau
+        # Tracking target for f (gravity compensation)
         if self.U_prev is not None:
+            contact_schedule = self.opti.value(self.contact_schedule)
             for i in range(self.nodes):
-                # Previous solution for tau
-                # Tracking target for f (gravity compensation)
+                f_des = self.opti.value(self.f_des)
+                for j in range(self.n_feet):
+                    # Set forces to zero if not in contact
+                    if contact_schedule[j, i] == 0:
+                        f_des[3 * j : 3 * j + 3] = [0] * 3
+
                 u_prev = self.U_prev[i]
                 tau_prev = u_prev[:self.nj]
-                f_des = self.opti.value(self.f_des)
                 u_warm = ca.vertcat(tau_prev, f_des)
                 self.opti.set_initial(self.U_opt[i], u_warm)
 
@@ -207,3 +212,53 @@ class OCPWholeBodyABA(OCP):
         if retract_all:
             self.q_sol.append(np.array(x_last[:self.nq]))
             self.v_sol.append(np.array(x_last[self.nq:]))
+
+    def compile_solution(self, num_steps=3):
+        # Compile the first num_steps of the solution, to easily load on hardware
+        sol_x = ca.MX.sym("sol_x", self.opti.x.size()[0])
+        x_init = ca.MX.sym("x_init", self.nx)
+
+        q_sol, v_sol, a_sol, forces_sol, tau_sol = [], [], [], [], []
+        idx = 0
+
+        for i in range(num_steps):
+            nx_opt = self.ndx_opt + self.nu_opt[i]
+            sol = sol_x[idx : idx + nx_opt]
+            idx += nx_opt
+
+            dx_sol = sol[:self.ndx_opt]
+            u_sol = sol[self.ndx_opt:]
+            x_sol = self.dyn.state_integrate()(x_init, dx_sol)
+
+            q = x_sol[:self.nq]
+            v = x_sol[self.nq:]
+            tau_j = u_sol[:self.nj]
+            forces = u_sol[self.f_idx:]
+
+            # ABA dynamics
+            a = self.dyn.aba_dynamics(self.ext_force_frame)(q, v, tau_j, forces)
+
+            q_sol.append(q)
+            v_sol.append(v)
+            a_sol.append(a)
+            forces_sol.append(forces)
+            tau_sol.append(tau_j)
+
+        # Stack lists into outputs
+        q_out = ca.horzcat(*q_sol).T
+        v_out = ca.horzcat(*v_sol).T
+        a_out = ca.horzcat(*a_sol).T
+        forces_out = ca.horzcat(*forces_sol).T
+        tau_out = ca.horzcat(*tau_sol).T
+
+        # Create function
+        retract_function = ca.Function(
+            "retract_solution",
+            [sol_x, x_init],
+            [q_out, v_out, a_out, forces_out, tau_out],
+            ["sol_x", "x_init"],
+            ["q", "v", "a", "forces", "tau"]
+        )
+
+        # Generate C code
+        retract_function.generate("retract_solution.c")
