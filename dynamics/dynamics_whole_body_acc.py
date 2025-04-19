@@ -93,18 +93,34 @@ class DynamicsWholeBodyAcc(Dynamics):
             ee_frames.append(ext_force_frame)
         forces = ca.SX.sym("forces", 3 * len(ee_frames))
 
-        # Pinocchio terms
-        M = cpin.crba(self.model, self.data, q)  # Mass matrix
-        nle = cpin.nonLinearEffects(self.model, self.data, q, v)  # Coriolis + gravity
-        tau_ext_base = ca.SX.zeros(6)
+        # RNEA
+        cpin.framesForwardKinematics(self.model, self.data, q)
+        f_ext = [cpin.Force(ca.SX.zeros(6)) for _ in range(self.model.njoints)]
         for idx, frame_id in enumerate(ee_frames):
-            f_world = forces[idx * 3 : (idx + 1) * 3]
-            J_c = cpin.computeFrameJacobian(self.model, self.data, q, frame_id, pin.LOCAL_WORLD_ALIGNED)
-            J_c_lin_base = J_c[:3, :6]
-            tau_ext_base += J_c_lin_base.T @ f_world
+            # OCS2 implementation
+            joint_id = self.model.frames[frame_id].parentJoint
+            translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation
+            rotation_world_to_joint_frame = self.data.oMi[joint_id].rotation.T
 
-        # Dynamics gaps
-        M_b = M[:6, :]
-        gaps = M_b @ a + nle[:6] - tau_ext_base
+            f_world = forces[idx * 3 : (idx + 1) * 3]
+            f_lin = rotation_world_to_joint_frame @ f_world
+            f_ang = ca.cross(translation_joint_to_contact_frame, f_lin)
+            f = ca.vertcat(f_lin, f_ang)
+            f_ext[joint_id] = cpin.Force(f)
+
+        tau_rnea = cpin.rnea(self.model, self.data, q, v, a, f_ext)
+        gaps = tau_rnea[:6]  # zero floating base torques
+
+        # NOTE: Can also be computed manually, but this is slower.
+        # M = cpin.crba(self.model, self.data, q)  # Mass matrix
+        # nle = cpin.nonLinearEffects(self.model, self.data, q, v)  # Coriolis + gravity
+        # tau_ext_base = ca.SX.zeros(6)
+        # for idx, frame_id in enumerate(ee_frames):
+        #     f_world = forces[idx * 3 : (idx + 1) * 3]
+        #     J_c = cpin.computeFrameJacobian(self.model, self.data, q, frame_id, pin.LOCAL_WORLD_ALIGNED)
+        #     J_c_lin_base = J_c[:3, :6]
+        #     tau_ext_base += J_c_lin_base.T @ f_world
+        # M_b = M[:6, :]
+        # gaps = M_b @ a + nle[:6] - tau_ext_base
 
         return ca.Function("dyn_gaps", [q, v, a, forces], [gaps], ["q", "v", "a", "forces"], ["gaps"])
