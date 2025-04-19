@@ -31,7 +31,7 @@ swing_vel_limits = [0.1, -0.2]
 mpc_loops = 100
 
 # Solver
-solver = "fatrop"
+solver = "osqp"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
@@ -53,8 +53,8 @@ def mpc_loop(ocp, robot_instance):
             solver_function = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
         else:
             # Initialize solver and compile it
-            ocp.init_solver(warm_start)
-            ocp.compile_solver()
+            ocp.init_solver()
+            ocp.compile_solver(warm_start)
             solver_function = ocp.solver_function
 
         # Warm start (dual variables)
@@ -115,7 +115,7 @@ def mpc_loop(ocp, robot_instance):
             ocp.update_previous_torques(tau_prev)
 
         # Initialize solver
-        ocp.init_solver(warm_start)
+        ocp.init_solver()
 
         for k in range(mpc_loops):
             # Update parameters
