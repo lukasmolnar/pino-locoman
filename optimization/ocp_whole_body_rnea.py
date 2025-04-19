@@ -233,20 +233,6 @@ class OCPWholeBodyRNEA(OCP):
         if self.lam_g is not None:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
 
-    def init_solver_params(self, warm_start):
-        super().init_solver_params(warm_start)
-
-        # Add RNEA specific parameters
-        if self.solver == "fatrop":
-            self.solver_params += [self.tau_prev, self.W_diag]
-
-        elif self.solver == "osqp":
-            self.solver_params = ca.vertcat(
-                self.solver_params,
-                self.opti.value(self.tau_prev),
-                self.opti.value(self.W_diag),
-            )
-
     def retract_opti_sol(self, retract_all=True):
         # Retract self.opti solution stored in self.sol
         self.DX_prev = [self.sol.value(dx) for dx in self.DX_opt]

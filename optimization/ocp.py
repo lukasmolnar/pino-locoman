@@ -244,9 +244,7 @@ class OCP:
     def warm_start(self):
         pass
 
-    def init_solver(self, warm_start):
-        self.init_solver_params(warm_start)
-
+    def init_solver(self):
         if self.solver == "fatrop":
             opts = {
                 "expand": True,
@@ -317,46 +315,22 @@ class OCP:
         else:
             raise ValueError(f"Solver {self.solver} not supported")
 
-    def init_solver_params(self, warm_start):
-        if self.solver == "fatrop":
-            # Params as list for code generation
-            self.solver_params = [self.x_init, self.dt_min, self.dt_max, self.contact_schedule, self.swing_schedule,
-                                  self.n_contacts, self.swing_period, self.swing_height, self.swing_vel_limits,
-                                  self.Q_diag, self.R_diag, self.base_vel_des]
-            if self.ext_force_frame:
-                self.solver_params += [self.ext_force_des]
-            if self.arm_ee_frame:
-                self.solver_params += [self.arm_vel_des]
-            if warm_start:
-                self.solver_params += [self.opti.x]
-
-        elif self.solver == "osqp":
-            # Params as stacked vector for data functions
-            self.solver_params = ca.vertcat(
-                self.opti.value(self.x_init),
-                self.opti.value(self.dt_min),
-                self.opti.value(self.dt_max),
-                ca.vec(self.opti.value(self.contact_schedule)),  # flattened
-                ca.vec(self.opti.value(self.swing_schedule)),  # flattened
-                self.opti.value(self.n_contacts),
-                self.opti.value(self.swing_period),
-                self.opti.value(self.swing_height),
-                self.opti.value(self.swing_vel_limits),
-                self.opti.value(self.Q_diag),
-                self.opti.value(self.R_diag),
-                self.opti.value(self.base_vel_des),
-            )
-            if self.ext_force_frame:
-                self.solver_params = ca.vertcat(self.solver_params, self.opti.value(self.ext_force_des))
-            if self.arm_ee_frame:
-                self.solver_params = ca.vertcat(self.solver_params, self.opti.value(self.arm_vel_des))
-
-    def compile_solver(self):
+    def compile_solver(self, warm_start):
         if self.solver == "fatrop":
             # Generate solver function that directly outputs the solution
+            solver_params = [self.x_init, self.dt_min, self.dt_max, self.contact_schedule, self.swing_schedule,
+                             self.n_contacts, self.swing_period, self.swing_height, self.swing_vel_limits,
+                             self.Q_diag, self.R_diag, self.base_vel_des]
+            if self.ext_force_frame:
+                solver_params += [self.ext_force_des]
+            if self.arm_ee_frame:
+                solver_params += [self.arm_vel_des]
+            if warm_start:
+                solver_params += [self.opti.x]
+
             self.solver_function = self.opti.to_function(
                 "compiled_solver",
-                self.solver_params,
+                solver_params,
                 [self.opti.x] # , self.opti.lam_g]  # output
             )
             self.solver_function.generate("compiled_solver.c")
@@ -394,15 +368,16 @@ class OCP:
 
         elif self.solver == "osqp":
             print("***************** OSQP *****************")
-            # Initial guess
+            # Get current state and parameters
             current_x = self.opti.value(self.opti.x, self.opti.initial())
+            current_params = self.opti.value(self.opti.p, self.opti.initial())
             start_time = time.time()
 
             # TODO: How many iterations?
             for _ in range(1):
                 # Get data
                 start = time.time()
-                grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, self.solver_params)
+                grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, current_params)
                 end = time.time()
                 print("Data time (ms): ", (end - start) * 1000)
 
@@ -422,13 +397,13 @@ class OCP:
                 print("Solve time (ms): ", (end - start) * 1000)
 
                 # Line search
-                current_x = self._armijo_line_search(current_x, sol_dx)
+                current_x = self._armijo_line_search(sol_dx, current_x, current_params)
                 # current_x += sol_dx
 
             end_time = time.time()
             self.solve_time = end_time - start_time
 
-            g, lbg, ubg = self.g_data(current_x, self.solver_params)
+            g, lbg, ubg = self.g_data(current_x, current_params)
             violation_max = self._constraint_violation_max(g, lbg, ubg)
             print("Max violation: ", violation_max)
 
@@ -440,7 +415,7 @@ class OCP:
     def retract_stacked_sol(self, sol_x, retract_all=True):
         pass
 
-    def _armijo_line_search(self, current_x, dx):
+    def _armijo_line_search(self, dx, current_x, current_params):
         # Params
         armijo_factor = 1e-4
         a = 1.0
@@ -451,8 +426,8 @@ class OCP:
         gamma = 1e-5
 
         # Get current data
-        f, grad_f = self.f_data(current_x, self.solver_params)
-        g, lbg, ubg = self.g_data(current_x, self.solver_params)
+        f, grad_f = self.f_data(current_x, current_params)
+        g, lbg, ubg = self.g_data(current_x, current_params)
 
         g_metric = self._constraint_violation_metric(g, lbg, ubg)
         armijo_metric = grad_f.T @ dx
@@ -461,8 +436,8 @@ class OCP:
         while not accepted and a > a_min:
             # Evaluate new solution
             new_x = current_x + a * dx
-            new_f, _ = self.f_data(new_x, self.solver_params)
-            new_g, lbg, ubg = self.g_data(new_x, self.solver_params)
+            new_f, _ = self.f_data(new_x, current_params)
+            new_g, lbg, ubg = self.g_data(new_x, current_params)
 
             new_g_metric = self._constraint_violation_metric(new_g, lbg, ubg)
             if new_g_metric > g_max:
