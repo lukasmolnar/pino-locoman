@@ -108,15 +108,15 @@ def mpc_loop(ocp, robot_instance):
             robot_instance.display(ocp.q_sol[-1])  # display last q
 
     else:
-        # Initialize solver
-        ocp.init_solver(solver)
-
         # Initialize params
         ocp.update_initial_state(x_init)
         ocp.update_gait_sequence(t_current=0)
         if dynamics == "whole_body_rnea":
             ocp.update_previous_torques(tau_prev)
         ocp.update_solver_params(warm_start)
+
+        # Initialize solver
+        ocp.init_solver()
 
         for k in range(mpc_loops):
             # Update parameters
@@ -166,6 +166,7 @@ def main():
         default_args=default_args,
         robot=robot,
         nodes=nodes,
+        solver=solver,
     )
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)

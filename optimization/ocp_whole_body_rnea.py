@@ -7,8 +7,8 @@ from .ocp import OCP
 
 
 class OCPWholeBodyRNEA(OCP):
-    def __init__(self, robot, nodes, tau_nodes, include_acc=True):
-        super().__init__(robot, nodes)
+    def __init__(self, robot, solver, nodes, tau_nodes, include_acc=True):
+        super().__init__(robot, solver, nodes)
         self.tau_nodes = tau_nodes
 
         self.dyn = DynamicsWholeBodyTorque(self.model, self.mass, self.foot_frames)
@@ -205,21 +205,26 @@ class OCPWholeBodyRNEA(OCP):
         self.opti.set_value(self.tau_prev, tau_prev)
 
     def warm_start(self):
-        # TODO: Look into interpolating
+        # Previous solution for dx
         if self.DX_prev is not None:
             for i in range(self.nodes + 1):
-                # Previous solution for dx
                 dx_prev = self.DX_prev[i]
                 self.opti.set_initial(self.DX_opt[i], dx_prev)
                 continue
 
+        # Previous solution for acc, tau
+        # Tracking target for f (gravity compensation)
         if self.U_prev is not None:
+            contact_schedule = self.opti.value(self.contact_schedule)
             for i in range(self.nodes):
-                # Previous solution for acc, tau
-                # Tracking target for f (gravity compensation)
+                f_des = self.opti.value(self.f_des)
+                for j in range(self.n_feet):
+                    # Set forces to zero if not in contact
+                    if contact_schedule[j, i] == 0:
+                        f_des[3 * j : 3 * j + 3] = [0] * 3
+
                 u_prev = self.U_prev[i]
                 a_prev = u_prev[:self.na_opt]
-                f_des = self.opti.value(self.f_des)
                 u_warm = ca.vertcat(a_prev, f_des)
                 if i < self.tau_nodes:
                     tau_prev = u_prev[self.tau_idx:]
@@ -233,10 +238,10 @@ class OCPWholeBodyRNEA(OCP):
         super().update_solver_params(warm_start)
 
         # Add RNEA specific parameters
-        if self.solver_type == "fatrop":
+        if self.solver == "fatrop":
             self.solver_params += [self.tau_prev, self.W_diag]
 
-        elif self.solver_type == "osqp":
+        elif self.solver == "osqp":
             self.solver_params = ca.vertcat(
                 self.solver_params,
                 self.opti.value(self.tau_prev),

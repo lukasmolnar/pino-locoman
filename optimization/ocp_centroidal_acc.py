@@ -6,8 +6,8 @@ from .ocp import OCP
 
 
 class OCPCentroidalAcc(OCP):
-    def __init__(self, robot, nodes, include_base=False):
-        super().__init__(robot, nodes)
+    def __init__(self, robot, solver, nodes, include_base=False):
+        super().__init__(robot, solver, nodes)
 
         # Dynamics
         self.dyn = DynamicsCentroidalAcc(self.model, self.mass, self.foot_frames)
@@ -137,21 +137,26 @@ class OCPCentroidalAcc(OCP):
         return self.U_opt[i][self.f_idx:]
 
     def warm_start(self):
-        # TODO: Look into interpolating
+        # Previous solution for dx
         if self.DX_prev is not None:
             for i in range(self.nodes + 1):
-                # Previous solution for dx
                 dx_prev = self.DX_prev[i]
                 self.opti.set_initial(self.DX_opt[i], dx_prev)
                 continue
 
+        # Previous solution for acc
+        # Tracking target for f (gravity compensation)
         if self.U_prev is not None:
+            contact_schedule = self.opti.value(self.contact_schedule)
             for i in range(self.nodes):
-                # Previous solution for a
-                # Tracking target for f (gravity compensation)
+                f_des = self.opti.value(self.f_des)
+                for j in range(self.n_feet):
+                    # Set forces to zero if not in contact
+                    if contact_schedule[j, i] == 0:
+                        f_des[3 * j : 3 * j + 3] = [0] * 3
+
                 u_prev = self.U_prev[i]
                 a_prev = u_prev[:self.na_opt]
-                f_des = self.opti.value(self.f_des)
                 u_warm = ca.vertcat(a_prev, f_des)
                 self.opti.set_initial(self.U_opt[i], u_warm)
 
