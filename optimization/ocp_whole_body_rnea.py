@@ -1,6 +1,6 @@
 import numpy as np
 import casadi as ca
-import pinocchio as pin
+from scipy.interpolate import interp1d
 
 from dynamics import DynamicsWholeBodyTorque
 from .ocp import OCP
@@ -143,7 +143,7 @@ class OCPWholeBodyRNEA(OCP):
         dv = dx[self.nv:]  # delta v
         q = self.get_q(i)
         v = self.get_v(i)
-        a = self.get_acc(i)
+        a = self.get_a(i)
         forces = self.get_forces(i)
         tau_j = self.get_tau(i)
         dt = self.dts[i]
@@ -153,6 +153,7 @@ class OCPWholeBodyRNEA(OCP):
         dq_next = dx_next[:self.nv]
         dv_next = dx_next[self.nv:]
         self.opti.subject_to(dq_next == dq + v * dt + 0.5 * a * dt**2)
+        # self.opti.subject_to(dq_next == dq + v * dt)
         if self.include_acc:
             # Otherwise a inherently uses this finite difference
             self.opti.subject_to(dv_next == dv + a * dt)
@@ -180,7 +181,7 @@ class OCPWholeBodyRNEA(OCP):
         x = self.dyn.state_integrate()(self.x_init, dx)
         return x[self.nq:]
 
-    def get_acc(self, i):
+    def get_a(self, i):
         if self.include_acc:
             a = self.U_opt[i][:self.na_opt]
         else:
@@ -205,38 +206,60 @@ class OCPWholeBodyRNEA(OCP):
         self.opti.set_value(self.tau_prev, tau_prev)
 
     def warm_start(self):
-        # TODO: Look into interpolating
-        if self.DX_prev is not None:
-            for i in range(self.nodes + 1):
-                # Previous solution for dx
-                dx_prev = self.DX_prev[i]
-                self.opti.set_initial(self.DX_opt[i], dx_prev)
-                continue
+        dts = [self.opti.value(self.dts[i]) for i in range(self.nodes)]
+        t_prev = np.concatenate(([0], np.cumsum(dts)))
+        t_new = t_prev + dts[0]  # shifted by the first timestep
 
+        # Interpolate previous solution
+        if self.DX_prev is not None:
+            DX_prev_array = np.array(self.DX_prev)
+            DX_interp_fn = interp1d(t_prev, DX_prev_array, axis=0, kind='linear', fill_value='extrapolate')
+            DX_init = self.DX_prev[1]
+            for i in range(self.nodes + 1):
+                DX_interp = DX_interp_fn(t_new[i])
+                DX_warm = DX_interp - DX_init  # always with respect to the initial state
+                self.opti.set_initial(self.DX_opt[i], DX_warm)
+
+        # Interpolate previous solution for acc, tau
+        # Use tracking target for forces!
         if self.U_prev is not None:
+            t_prev_tau = t_prev[:self.tau_nodes]
+            t_prev_no_tau = t_prev[self.tau_nodes:self.nodes]
+            U_prev_tau = np.array(self.U_prev[:self.tau_nodes])
+            U_prev_no_tau = np.array(self.U_prev[self.tau_nodes:])
+            U_interp_tau_fn = interp1d(t_prev_tau, U_prev_tau, axis=0, kind='linear', fill_value='extrapolate')
+            U_interp_no_tau_fn = interp1d(t_prev_no_tau, U_prev_no_tau, axis=0, kind='linear', fill_value='extrapolate')
+
+            contact_schedule = self.opti.value(self.contact_schedule)
             for i in range(self.nodes):
-                # Previous solution for acc, tau
-                # Tracking target for f (gravity compensation)
-                u_prev = self.U_prev[i]
-                a_prev = u_prev[:self.na_opt]
                 f_des = self.opti.value(self.f_des)
-                u_warm = ca.vertcat(a_prev, f_des)
+                for j in range(self.n_feet):
+                    # Set forces to zero if not in contact
+                    if contact_schedule[j, i] == 0:
+                        f_des[3 * j : 3 * j + 3] = [0] * 3
+
                 if i < self.tau_nodes:
-                    tau_prev = u_prev[self.tau_idx:]
-                    u_warm = ca.vertcat(u_warm, tau_prev)
-                self.opti.set_initial(self.U_opt[i], u_warm)
+                    U_interp = U_interp_tau_fn(t_new[i])
+                    a = U_interp[:self.na_opt]
+                    tau = U_interp[self.tau_idx:]
+                    U_warm = ca.vertcat(a, f_des, tau)
+                else:
+                    U_interp = U_interp_no_tau_fn(t_new[i])
+                    a = U_interp[:self.na_opt]
+                    U_warm = ca.vertcat(a, f_des)
+                self.opti.set_initial(self.U_opt[i], U_warm)
 
         if self.lam_g is not None:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
 
-    def update_solver_params(self, warm_start):
-        super().update_solver_params(warm_start)
+    def update_solver_params(self, solver, warm_start):
+        super().update_solver_params(solver, warm_start)
 
         # Add RNEA specific parameters
-        if self.solver_type == "fatrop":
+        if solver == "fatrop":
             self.solver_params += [self.tau_prev, self.W_diag]
 
-        elif self.solver_type == "osqp":
+        elif solver == "osqp":
             self.solver_params = ca.vertcat(
                 self.solver_params,
                 self.opti.value(self.tau_prev),

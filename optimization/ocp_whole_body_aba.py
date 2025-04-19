@@ -1,5 +1,6 @@
 import numpy as np
 import casadi as ca
+from scipy.interpolate import interp1d
 
 from dynamics import DynamicsWholeBodyTorque
 from .ocp import OCP
@@ -122,23 +123,38 @@ class OCPWholeBodyABA(OCP):
         return self.U_opt[i][self.f_idx:]
 
     def warm_start(self):
-        # TODO: Look into interpolating
-        if self.DX_prev is not None:
-            for i in range(self.nodes + 1):
-                # Previous solution for dx
-                dx_prev = self.DX_prev[i]
-                self.opti.set_initial(self.DX_opt[i], dx_prev)
-                continue
+        dts = [self.opti.value(self.dts[i]) for i in range(self.nodes)]
+        t_prev = np.concatenate(([0], np.cumsum(dts)))
+        t_new = t_prev + dts[0]  # shifted by the first timestep
 
+        # Interpolate previous solution
+        if self.DX_prev is not None:
+            DX_prev = np.array(self.DX_prev)
+            DX_interp_fn = interp1d(t_prev, DX_prev, axis=0, kind='linear', fill_value='extrapolate')
+            DX_init = self.DX_prev[1]
+            for i in range(self.nodes + 1):
+                DX_interp = DX_interp_fn(t_new[i])
+                DX_warm = DX_interp - DX_init  # always with respect to the initial state
+                self.opti.set_initial(self.DX_opt[i], DX_warm)
+
+        # Interpolate previous solution for tau
+        # Use tracking target for forces!
         if self.U_prev is not None:
+            U_prev = np.array(self.U_prev)
+            U_interp_fn = interp1d(t_prev[:self.nodes], U_prev, axis=0, kind='linear', fill_value='extrapolate')
+
+            contact_schedule = self.opti.value(self.contact_schedule)
             for i in range(self.nodes):
-                # Previous solution for tau
-                # Tracking target for f (gravity compensation)
-                u_prev = self.U_prev[i]
-                tau_prev = u_prev[:self.nj]
                 f_des = self.opti.value(self.f_des)
-                u_warm = ca.vertcat(tau_prev, f_des)
-                self.opti.set_initial(self.U_opt[i], u_warm)
+                for j in range(self.n_feet):
+                    # Set forces to zero if not in contact
+                    if contact_schedule[j, i] == 0:
+                        f_des[3 * j : 3 * j + 3] = [0] * 3
+
+                    U_interp = U_interp_fn(t_new[i])
+                    tau_j = U_interp[:self.nj]
+                    U_warm = ca.vertcat(tau_j, f_des)
+                self.opti.set_initial(self.U_opt[i], U_warm)
 
         if self.lam_g is not None:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
