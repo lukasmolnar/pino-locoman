@@ -288,12 +288,16 @@ class OCP:
             self.hess_data = ca.Function("hess_data", [x, p], [hess_f])
             self.f_data = ca.Function("f_data", [x, p], [f, grad_f])
             self.g_data = ca.Function("g_data", [x, p], [g, lbg, ubg])
-            
+
             # Store initial hessian (diagonal!)
             x_val = self.opti.value(self.opti.x, self.opti.initial())
             p_val = self.opti.value(self.opti.p, self.opti.initial())
             hess_val = self.hess_data(x_val, p_val)
             self.hess_diag = np.diag(hess_val)
+
+            # NOTE: Uncomment to test compiled functions
+            # self.sqp_data = ca.external("sqp_data", "codegen/sqp/libsqp_data_b2_waj_N30.so")
+            # self.hess_diag = np.loadtxt("codegen/sqp/sqp_hess_b2_waj_N30.txt")
 
             # OSQP formulation with dummy data and diagonal hessian
             A_rows, A_cols = J_g.sparsity().get_triplet()  # store sparsity pattern
@@ -306,7 +310,7 @@ class OCP:
             self.osqp_prob = osqp.OSQP()
             self.osqp_prob.setup(P, q, A, l, u, **self.osqp_opts)
 
-            # OSQP codegen doesn't work with conda environment!
+            # NOTE: OSQP codegen doesn't work with conda environment!
             # self.osqp_prob.codegen(
             #     "codegen/osqp",
             #     parameters="matrices",
@@ -397,8 +401,8 @@ class OCP:
                 print("Solve time (ms): ", (end - start) * 1000)
 
                 # Line search
-                current_x = self._armijo_line_search(sol_dx, current_x, current_params)
-                # current_x += sol_dx
+                # current_x = self._armijo_line_search(sol_dx, current_x, current_params)
+                current_x += sol_dx
 
             end_time = time.time()
             self.solve_time = end_time - start_time
@@ -406,6 +410,12 @@ class OCP:
             g, lbg, ubg = self.g_data(current_x, current_params)
             violation_max = self._constraint_violation_max(g, lbg, ubg)
             print("Max violation: ", violation_max)
+
+            # NOTE: Uncomment to test retract function
+            # retract_fn = ca.external("retract_solution", "codegen/retract/libretract_b2_waj.so")
+            # x_init = self.opti.value(self.x_init, self.opti.initial())
+            # retract = retract_fn(current_x, x_init)
+            # print("Retract solution: ", retract)
 
             self.retract_stacked_sol(current_x, retract_all)
 
@@ -474,7 +484,7 @@ class OCP:
 
         metric = np.linalg.norm(violations)
         return metric
-    
+
     def _constraint_violation_max(self, g, lbg, ubg):
         lb_violations = np.maximum(0, lbg - g)
         ub_violations = np.maximum(0, g - ubg)
