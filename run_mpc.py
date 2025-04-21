@@ -35,7 +35,7 @@ solver = "osqp"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_b2_wb_aj_N14.so"
+# load_compiled_solver = "libsolver_b2_waf_N14.so"
 
 debug = True  # print info
 plot = True
@@ -75,6 +75,11 @@ def mpc_loop(ocp, robot_instance):
             swing_schedule = ocp.opti.value(ocp.swing_schedule)
             n_contacts = ocp.opti.value(ocp.n_contacts)
             swing_period = ocp.opti.value(ocp.swing_period)
+
+            # Add noise to x_init
+            # q_noise = np.random.normal(0, 0.001, size=ocp.nq)
+            # v_noise = np.random.normal(0, 0.01, size=ocp.nv)
+            # x_noisy = x_init + np.concatenate((q_noise, v_noise)) 
 
             params = [x_init, dt_min, dt_max, contact_schedule, swing_schedule, n_contacts,
                       swing_period, swing_height, swing_vel_limits, Q_diag, R_diag, base_vel_des]
@@ -116,6 +121,8 @@ def mpc_loop(ocp, robot_instance):
 
         # Initialize solver
         ocp.init_solver()
+        if compile_solver:
+            ocp.compile_solver(warm_start)
 
         for k in range(mpc_loops):
             # Update parameters

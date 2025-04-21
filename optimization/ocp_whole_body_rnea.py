@@ -151,7 +151,8 @@ class OCPWholeBodyRNEA(OCP):
         dx_next = self.DX_opt[i+1]
         dq_next = dx_next[:self.nv]
         dv_next = dx_next[self.nv:]
-        self.opti.subject_to(dq_next == dq + v * dt + 0.5 * a * dt**2)
+        # self.opti.subject_to(dq_next == dq + v * dt + 0.5 * a * dt**2)
+        self.opti.subject_to(dq_next == dq + v * dt)
         if self.include_acc:
             # Otherwise a inherently uses this finite difference
             self.opti.subject_to(dv_next == dv + a * dt)
@@ -232,6 +233,40 @@ class OCPWholeBodyRNEA(OCP):
 
         if self.lam_g is not None:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
+
+    def compile_solver(self, warm_start):
+        if self.solver == "fatrop":
+            # Generate solver function that directly outputs the solution
+            solver_params = [self.x_init, self.dt_min, self.dt_max, self.contact_schedule, self.swing_schedule,
+                             self.n_contacts, self.swing_period, self.swing_height, self.swing_vel_limits,
+                             self.Q_diag, self.R_diag, self.base_vel_des]
+            if self.ext_force_frame:
+                solver_params += [self.ext_force_des]
+            if self.arm_ee_frame:
+                solver_params += [self.arm_vel_des]
+            if warm_start:
+                solver_params += [self.opti.x]
+
+            # RNEA specific params
+            solver_params += [self.tau_prev, self.W_diag]
+
+            self.solver_function = self.opti.to_function(
+                "compiled_solver",
+                solver_params,
+                [self.opti.x] # , self.opti.lam_g]  # output
+            )
+            self.solver_function.generate("compiled_solver.c")
+
+        elif self.solver == "osqp":
+            # Generate data functions that are needed to formulate the SQP
+            self.sqp_data.generate("sqp_data.c")
+            self.f_data.generate("f_data.c")
+            self.g_data.generate("g_data.c")
+
+            # Store hessian diagonal array
+            np.savetxt("codegen/hess_diag.txt", self.hess_diag)
+
+        self.compile_solution(num_steps=3)
 
     def retract_opti_sol(self, retract_all=True):
         # Retract self.opti solution stored in self.sol
