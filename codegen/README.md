@@ -1,6 +1,6 @@
 # Solver code generation
 
-### Setup
+## Fatrop
 
 Install Fatrop and Blasfeo. Make sure the Blasfeo include directory is correct in CMakeLists.txt.
 
@@ -24,4 +24,11 @@ module load stack/2024-06 gcc/12.2.0 cmake/3.27.7
 2. Run batch job:
 ```bash
 sbatch --time=0:30:00 --mem-per-cpu=16G --wrap="make"
+```
+
+## OSQP
+
+No libraries required. Copy `sqp_data.c` into this folder and run the following command (locally or in Euler):
+```bash
+gcc -fPIC -shared -O3 -o libsqp_data.so sqp_data.c
 ```

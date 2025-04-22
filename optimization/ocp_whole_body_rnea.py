@@ -1,14 +1,13 @@
 import numpy as np
 import casadi as ca
-import pinocchio as pin
 
 from dynamics import DynamicsWholeBodyTorque
 from .ocp import OCP
 
 
 class OCPWholeBodyRNEA(OCP):
-    def __init__(self, robot, nodes, tau_nodes):
-        super().__init__(robot, nodes)
+    def __init__(self, robot, solver, nodes, tau_nodes, include_acc=True):
+        super().__init__(robot, solver, nodes)
         self.tau_nodes = tau_nodes
 
         self.dyn = DynamicsWholeBodyTorque(self.model, self.mass, self.foot_frames)
@@ -18,6 +17,13 @@ class OCPWholeBodyRNEA(OCP):
 
         # Store solutions
         self.tau_sol = []
+
+        # Whether to include accelerations in the input (necessary for Fatrop solver)
+        self.include_acc = include_acc
+        if self.include_acc:
+            self.na_opt = self.nv
+        else:
+            self.na_opt = 0
 
     def set_weights(self):
         # State and input weights
@@ -42,7 +48,7 @@ class OCPWholeBodyRNEA(OCP):
 
         Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))
         R_diag = np.concatenate((
-            [1e-3] * self.nv,  # accelerations
+            [1e-3] * self.na_opt,  # accelerations
             [1e-3] * self.nf,  # forces
             [1e-4] * self.nj,  # joint torques
         ))
@@ -63,11 +69,11 @@ class OCPWholeBodyRNEA(OCP):
 
         # Input size: Adaptive for each node
         self.nu_opt = (
-            [self.nv + self.nf + self.nj] * self.tau_nodes +  # accelerations + forces + torques
-            [self.nv + self.nf] * (self.nodes - self.tau_nodes)  # accelerations + forces
+            [self.na_opt + self.nf + self.nj] * self.tau_nodes +  # accelerations + forces + torques
+            [self.na_opt + self.nf] * (self.nodes - self.tau_nodes)  # accelerations + forces
         )
-        self.f_idx = self.nv  # start index for forces
-        self.tau_idx = self.nv + self.nf  # start index for torques
+        self.f_idx = self.na_opt  # start index for forces
+        self.tau_idx = self.f_idx + self.nf  # start index for torques
 
         # Decision variables
         self.DX_opt = []
@@ -97,7 +103,7 @@ class OCPWholeBodyRNEA(OCP):
             self.f_des = ca.vertcat(self.f_des, [0] * 3)  # zero force at end-effector
 
         # Desired input: Use this for warm starting
-        self.u_des = ca.vertcat([0] * self.nv, self.f_des, [0] * self.nj)  # zero acc + torque
+        self.u_des = ca.vertcat([0] * self.na_opt, self.f_des, [0] * self.nj)  # zero acc + torque
 
     def setup_objective(self):
         obj = 0
@@ -136,7 +142,7 @@ class OCPWholeBodyRNEA(OCP):
         dv = dx[self.nv:]  # delta v
         q = self.get_q(i)
         v = self.get_v(i)
-        a = self.get_acc(i)
+        a = self.get_a(i)
         forces = self.get_forces(i)
         tau_j = self.get_tau(i)
         dt = self.dts[i]
@@ -145,8 +151,11 @@ class OCPWholeBodyRNEA(OCP):
         dx_next = self.DX_opt[i+1]
         dq_next = dx_next[:self.nv]
         dv_next = dx_next[self.nv:]
-        self.opti.subject_to(dq_next == dq + v * dt + 0.5 * a * dt**2)
-        self.opti.subject_to(dv_next == dv + a * dt)
+        # self.opti.subject_to(dq_next == dq + v * dt + 0.5 * a * dt**2)
+        self.opti.subject_to(dq_next == dq + v * dt)
+        if self.include_acc:
+            # Otherwise a inherently uses this finite difference
+            self.opti.subject_to(dv_next == dv + a * dt)
 
         # RNEA constraint
         tau_rnea = self.dyn.rnea_dynamics(self.ext_force_frame)(q, v, a, forces)
@@ -171,8 +180,15 @@ class OCPWholeBodyRNEA(OCP):
         x = self.dyn.state_integrate()(self.x_init, dx)
         return x[self.nq:]
 
-    def get_acc(self, i):
-        return self.U_opt[i][:self.f_idx]
+    def get_a(self, i):
+        if self.include_acc:
+            a = self.U_opt[i][:self.na_opt]
+        else:
+            # Finite difference
+            v = self.get_v(i)
+            v_next = self.get_v(i + 1)
+            a = (v_next - v) / self.dts[i]
+        return a
 
     def get_forces(self, i):
         return self.U_opt[i][self.f_idx:self.tau_idx]
@@ -189,21 +205,26 @@ class OCPWholeBodyRNEA(OCP):
         self.opti.set_value(self.tau_prev, tau_prev)
 
     def warm_start(self):
-        # TODO: Look into interpolating
+        # Previous solution for dx
         if self.DX_prev is not None:
             for i in range(self.nodes + 1):
-                # Previous solution for dx
                 dx_prev = self.DX_prev[i]
                 self.opti.set_initial(self.DX_opt[i], dx_prev)
                 continue
 
+        # Previous solution for acc, tau
+        # Tracking target for f (gravity compensation)
         if self.U_prev is not None:
+            contact_schedule = self.opti.value(self.contact_schedule)
             for i in range(self.nodes):
-                # Previous solution for acc, tau
-                # Tracking target for f (gravity compensation)
-                u_prev = self.U_prev[i]
-                a_prev = u_prev[:self.f_idx]
                 f_des = self.opti.value(self.f_des)
+                for j in range(self.n_feet):
+                    # Set forces to zero if not in contact
+                    if contact_schedule[j, i] == 0:
+                        f_des[3 * j : 3 * j + 3] = [0] * 3
+
+                u_prev = self.U_prev[i]
+                a_prev = u_prev[:self.na_opt]
                 u_warm = ca.vertcat(a_prev, f_des)
                 if i < self.tau_nodes:
                     tau_prev = u_prev[self.tau_idx:]
@@ -213,22 +234,39 @@ class OCPWholeBodyRNEA(OCP):
         if self.lam_g is not None:
             self.opti.set_initial(self.opti.lam_g, self.lam_g)
 
-    def init_solver(self, solver="fatrop", warm_start=False):
-        super().init_solver(solver, warm_start)
+    def compile_solver(self, warm_start):
+        if self.solver == "fatrop":
+            # Generate solver function that directly outputs the solution
+            solver_params = [self.x_init, self.dt_min, self.dt_max, self.contact_schedule, self.swing_schedule,
+                             self.n_contacts, self.swing_period, self.swing_height, self.swing_vel_limits,
+                             self.Q_diag, self.R_diag, self.base_vel_des]
+            if self.ext_force_frame:
+                solver_params += [self.ext_force_des]
+            if self.arm_ee_frame:
+                solver_params += [self.arm_vel_des]
+            if warm_start:
+                solver_params += [self.opti.x]
 
-        # Add RNEA specific parameters
-        if solver == "fatrop":
-            self.solver_params += [self.tau_prev, self.W_diag]
+            # RNEA specific params
+            solver_params += [self.tau_prev, self.W_diag]
 
-        elif solver == "osqp":
-            self.solver_params = ca.vertcat(
-                self.solver_params,
-                self.opti.value(self.tau_prev),
-                self.opti.value(self.W_diag),
+            self.solver_function = self.opti.to_function(
+                "compiled_solver",
+                solver_params,
+                [self.opti.x] # , self.opti.lam_g]  # output
             )
+            self.solver_function.generate("compiled_solver.c")
 
-        else:
-            raise ValueError(f"Solver {solver} not supported")
+        elif self.solver == "osqp":
+            # Generate data functions that are needed to formulate the SQP
+            self.sqp_data.generate("sqp_data.c")
+            self.f_data.generate("f_data.c")
+            self.g_data.generate("g_data.c")
+
+            # Store hessian diagonal array
+            np.savetxt("codegen/hess_diag.txt", self.hess_diag)
+
+        self.compile_solution(num_steps=3)
 
     def retract_opti_sol(self, retract_all=True):
         # Retract self.opti solution stored in self.sol
@@ -241,7 +279,7 @@ class OCPWholeBodyRNEA(OCP):
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
             self.q_sol.append(np.array(x_sol[:self.nq]))
             self.v_sol.append(np.array(x_sol[self.nq:]))
-            self.a_sol.append(np.array(u_sol[:self.f_idx]))
+            self.a_sol.append(np.array(u_sol[:self.na_opt]))
             self.forces_sol.append(np.array(u_sol[self.f_idx:self.tau_idx]))
             self.tau_sol.append(np.array(u_sol[self.tau_idx:]))
 
@@ -273,7 +311,7 @@ class OCPWholeBodyRNEA(OCP):
             if i == 0 or retract_all:
                 self.q_sol.append(np.array(x_sol[:self.nq]))
                 self.v_sol.append(np.array(x_sol[self.nq:]))
-                self.a_sol.append(np.array(u_sol[:self.f_idx]))
+                self.a_sol.append(np.array(u_sol[:self.na_opt]))
                 self.forces_sol.append(np.array(u_sol[self.f_idx:self.tau_idx]))
                 self.tau_sol.append(np.array(u_sol[self.tau_idx:]))
 
@@ -284,3 +322,45 @@ class OCPWholeBodyRNEA(OCP):
         if retract_all:
             self.q_sol.append(np.array(x_last[:self.nq]))
             self.v_sol.append(np.array(x_last[self.nq:]))
+
+    def compile_solution(self, num_steps=3):
+        # Compile the first num_steps of the solution, to easily load on hardware
+        sol_x = ca.MX.sym("sol_x", self.opti.x.size()[0])
+        x_init = ca.MX.sym("x_init", self.nx)
+
+        q_sol, v_sol, a_sol, forces_sol, tau_sol = [], [], [], [], []
+        idx = 0
+
+        for i in range(num_steps):
+            nx_opt = self.ndx_opt + self.nu_opt[i]
+            sol = sol_x[idx : idx + nx_opt]
+            idx += nx_opt
+
+            dx_sol = sol[:self.ndx_opt]
+            u_sol = sol[self.ndx_opt:]
+            x_sol = self.dyn.state_integrate()(x_init, dx_sol)
+
+            q_sol.append(x_sol[:self.nq])
+            v_sol.append(x_sol[self.nq:])
+            a_sol.append(u_sol[:self.na_opt])
+            forces_sol.append(u_sol[self.f_idx:self.tau_idx])
+            tau_sol.append(u_sol[self.tau_idx:])
+
+        # Stack lists into outputs
+        q_out = ca.horzcat(*q_sol).T
+        v_out = ca.horzcat(*v_sol).T
+        a_out = ca.horzcat(*a_sol).T
+        forces_out = ca.horzcat(*forces_sol).T
+        tau_out = ca.horzcat(*tau_sol).T
+
+        # Create function
+        retract_function = ca.Function(
+            "retract_solution",
+            [sol_x, x_init],
+            [q_out, v_out, a_out, forces_out, tau_out],
+            ["sol_x", "x_init"],
+            ["q", "v", "a", "forces", "tau"]
+        )
+
+        # Generate C code
+        retract_function.generate("retract_solution.c")

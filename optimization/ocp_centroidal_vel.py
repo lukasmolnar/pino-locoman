@@ -6,8 +6,8 @@ from .ocp import OCP
 
 
 class OCPCentroidalVel(OCP):
-    def __init__(self, robot, nodes, include_base=False):
-        super().__init__(robot, nodes)
+    def __init__(self, robot, solver, nodes, include_base=False):
+        super().__init__(robot, solver, nodes)
 
         # Dynamics
         self.dyn = DynamicsCentroidalVel(self.model, self.mass, self.foot_frames)
@@ -133,21 +133,26 @@ class OCPCentroidalVel(OCP):
         return u[self.f_idx:]
 
     def warm_start(self):
-        # TODO: Look into interpolating
+        # Previous solution for dx
         if self.DX_prev is not None:
             for i in range(self.nodes + 1):
-                # Previous solution for dx
                 dx_prev = self.DX_prev[i]
                 self.opti.set_initial(self.DX_opt[i], dx_prev)
                 continue
 
+        # Previous solution for vel
+        # Tracking target for f (gravity compensation)
         if self.U_prev is not None:
+            contact_schedule = self.opti.value(self.contact_schedule)
             for i in range(self.nodes):
-                # Previous solution for v
-                # Tracking target for f (gravity compensation)
+                f_des = self.opti.value(self.f_des)
+                for j in range(self.n_feet):
+                    # Set forces to zero if not in contact
+                    if contact_schedule[j, i] == 0:
+                        f_des[3 * j : 3 * j + 3] = [0] * 3
+
                 u_prev = self.U_prev[i]
                 v_prev = u_prev[:self.nv_opt]
-                f_des = self.opti.value(self.f_des)
                 u_warm = ca.vertcat(v_prev, f_des)
                 self.opti.set_initial(self.U_opt[i], u_warm)
 
@@ -159,8 +164,9 @@ class OCPCentroidalVel(OCP):
         self.DX_prev = [self.sol.value(dx) for dx in self.DX_opt]
         self.U_prev = [self.sol.value(u) for u in self.U_opt]
         x_init = self.opti.value(self.x_init)
+        dts = [self.opti.value(self.dts[i]) for i in range(self.nodes)]
 
-        for dx_sol, u_sol in zip(self.DX_prev, self.U_prev):
+        for i, (dx_sol, u_sol) in enumerate(zip(self.DX_prev, self.U_prev)):
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
             h = np.array(x_sol[:6])
             q = np.array(x_sol[6:])
@@ -171,10 +177,29 @@ class OCPCentroidalVel(OCP):
                 v_j = np.array(u_sol[:self.nv_opt])
                 # Compute base velocity from dynamics
                 v_b = self.dyn.base_vel_dynamics()(h, q, v_j)
+                v_b = np.array(v_b).flatten()
                 v = np.concatenate((v_b, v_j))
+
+            # Compute accelerations (finite differences)
+            u_sol_next = self.U_prev[i+1]
+            if self.include_base:
+                v_next = np.array(u_sol_next[:self.nv_opt])
+            else:
+                v_j_next = np.array(u_sol_next[:self.nv_opt])
+                # Compute base velocity from dynamics
+                v_b_next = self.dyn.base_vel_dynamics()(h, q, v_j_next)
+                v_next = np.concatenate((v_b_next, v_j_next))
+            a = (v_next - v) / dts[i]
+
+            # For base use more percise dynamics (as in RSL Unified MPC paper)
+            a_j = a[6:]
+            a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+            a_b = np.array(a_b).flatten()
+            a = np.concatenate((a_b, a_j))
 
             self.q_sol.append(q)
             self.v_sol.append(v)
+            self.a_sol.append(a)
             self.forces_sol.append(forces)
 
             if not retract_all:
@@ -186,6 +211,7 @@ class OCPCentroidalVel(OCP):
         self.U_prev = []
         x_init = self.opti.value(self.x_init)
         nx_opt = self.ndx_opt + self.nu_opt[0]  # nu_opt is constant
+        dts = [self.opti.value(self.dts[i]) for i in range(self.nodes)]
 
         for i in range(self.nodes):
             sol = sol_x[i*nx_opt : (i+1)*nx_opt]
@@ -205,10 +231,30 @@ class OCPCentroidalVel(OCP):
                     v_j = np.array(u_sol[:self.nv_opt])
                     # Compute base velocity from dynamics
                     v_b = self.dyn.base_vel_dynamics()(h, q, v_j)
+                    v_b = np.array(v_b).flatten()
                     v = np.concatenate((v_b, v_j))
+
+                # Compute accelerations (finite differences)
+                sol_next = sol_x[(i+1)*nx_opt : (i+2)*nx_opt]
+                u_sol_next = sol_next[self.ndx_opt:]
+                if self.include_base:
+                    v_next = np.array(u_sol_next[:self.nv_opt])
+                else:
+                    v_j_next = np.array(u_sol_next[:self.nv_opt])
+                    # Compute base velocity from dynamics
+                    v_b_next = self.dyn.base_vel_dynamics()(h, q, v_j_next)
+                    v_next = np.concatenate((v_b_next, v_j_next))
+                a = (v_next - v) / dts[i]
+
+                # For base use more percise dynamics (as in RSL Unified MPC paper)
+                a_j = a[6:].flatten()
+                a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+                a_b = np.array(a_b).flatten()
+                a = np.concatenate((a_b, a_j))
 
                 self.q_sol.append(q)
                 self.v_sol.append(v)
+                self.a_sol.append(a)
                 self.forces_sol.append(forces)
 
         dx_last = sol_x[self.nodes*nx_opt:]
@@ -217,3 +263,75 @@ class OCPCentroidalVel(OCP):
 
         if retract_all:
             self.q_sol.append(np.array(x_last[6:]))
+
+    def compile_solution(self, num_steps=3):
+        # Compile the first num_steps of the solution, to easily load on hardware
+        sol_x = ca.MX.sym("sol_x", self.opti.x.size()[0])
+        x_init = ca.MX.sym("x_init", self.nx)
+        nx_opt = self.ndx_opt + self.nu_opt[0]  # nu_opt is constant
+        dts = [self.opti.value(self.dts[i]) for i in range(num_steps)]
+
+        q_sol, v_sol, a_sol, forces_sol, tau_sol = [], [], [], [], []
+
+        for i in range(num_steps):
+            sol = sol_x[i*nx_opt : (i+1)*nx_opt]
+            dx_sol = sol[:self.ndx_opt]
+            u_sol = sol[self.ndx_opt:]
+            x_sol = self.dyn.state_integrate()(x_init, dx_sol)
+
+            h = x_sol[:6]
+            q = x_sol[6:]
+            forces = u_sol[self.f_idx:]
+            if self.include_base:
+                v = u_sol[:self.nv_opt]
+            else:
+                v_j = u_sol[:self.nv_opt]
+                # Compute base velocity from dynamics
+                v_b = self.dyn.base_vel_dynamics()(h, q, v_j)
+                v = ca.vertcat(v_b, v_j)
+
+            # Compute accelerations (finite differences)
+            sol_next = sol_x[(i+1)*nx_opt : (i+2)*nx_opt]
+            u_sol_next = sol_next[self.ndx_opt:]
+            if self.include_base:
+                v_next = u_sol_next[:self.nv_opt]
+            else:
+                v_j_next = u_sol_next[:self.nv_opt]
+                # Compute base velocity from dynamics
+                v_b_next = self.dyn.base_vel_dynamics()(h, q, v_j_next)
+                v_next = ca.vertcat(v_b_next, v_j_next)
+            a = (v_next - v) / dts[i]
+
+            # For base use more percise dynamics (as in RSL Unified MPC paper)
+            a_j = a[6:]
+            a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+            a = ca.vertcat(a_b, a_j)
+
+            # Compute torques
+            tau_rnea = self.dyn.rnea_dynamics(self.ext_force_frame)(q, v, a, forces)
+            tau_j = tau_rnea[6:]  # just joints
+
+            q_sol.append(q)
+            v_sol.append(v)
+            a_sol.append(a)
+            forces_sol.append(forces)
+            tau_sol.append(tau_j)
+
+        # Stack lists into outputs
+        q_out = ca.horzcat(*q_sol).T
+        v_out = ca.horzcat(*v_sol).T
+        a_out = ca.horzcat(*a_sol).T
+        forces_out = ca.horzcat(*forces_sol).T
+        tau_out = ca.horzcat(*tau_sol).T
+
+        # Create function
+        retract_function = ca.Function(
+            "retract_solution",
+            [sol_x, x_init],
+            [q_out, v_out, a_out, forces_out, tau_out],
+            ["sol_x", "x_init"],
+            ["q", "v", "a", "forces", "tau"]
+        )
+
+        # Generate C code
+        retract_function.generate("retract_solution.c")

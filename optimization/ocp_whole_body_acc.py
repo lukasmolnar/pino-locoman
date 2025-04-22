@@ -1,13 +1,14 @@
 import numpy as np
 import casadi as ca
+import pinocchio as pin
 
 from dynamics import DynamicsWholeBodyAcc
 from .ocp import OCP
 
 
 class OCPWholeBodyAcc(OCP):
-    def __init__(self, robot, nodes, include_base=False):
-        super().__init__(robot, nodes)
+    def __init__(self, robot, solver, nodes, include_base=False):
+        super().__init__(robot, solver, nodes)
 
         # Dynamics
         self.dyn = DynamicsWholeBodyAcc(self.model, self.mass, self.foot_frames)
@@ -129,7 +130,7 @@ class OCPWholeBodyAcc(OCP):
             q = self.get_q(i)
             v = self.get_v(i)
             forces = self.get_forces(i)
-            a_b = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+            a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
             a = ca.vertcat(a_b, a_j)
         return a
 
@@ -137,21 +138,26 @@ class OCPWholeBodyAcc(OCP):
         return self.U_opt[i][self.f_idx:]
 
     def warm_start(self):
-        # TODO: Look into interpolating
+        # Previous solution for dx
         if self.DX_prev is not None:
             for i in range(self.nodes + 1):
-                # Previous solution for dx
                 dx_prev = self.DX_prev[i]
                 self.opti.set_initial(self.DX_opt[i], dx_prev)
                 continue
 
+        # Previous solution for acc
+        # Tracking target for f (gravity compensation)
         if self.U_prev is not None:
+            contact_schedule = self.opti.value(self.contact_schedule)
             for i in range(self.nodes):
-                # Previous solution for a
-                # Tracking target for f (gravity compensation)
+                f_des = self.opti.value(self.f_des)
+                for j in range(self.n_feet):
+                    # Set forces to zero if not in contact
+                    if contact_schedule[j, i] == 0:
+                        f_des[3 * j : 3 * j + 3] = [0] * 3
+
                 u_prev = self.U_prev[i]
                 a_prev = u_prev[:self.na_opt]
-                f_des = self.opti.value(self.f_des)
                 u_warm = ca.vertcat(a_prev, f_des)
                 self.opti.set_initial(self.U_opt[i], u_warm)
 
@@ -166,21 +172,22 @@ class OCPWholeBodyAcc(OCP):
 
         for dx_sol, u_sol in zip(self.DX_prev, self.U_prev):
             x_sol = self.dyn.state_integrate()(x_init, dx_sol)
-            q_sol = np.array(x_sol[:self.nq])
-            v_sol = np.array(x_sol[self.nq:])
-            forces_sol = np.array(u_sol[self.f_idx:])
+            q = np.array(x_sol[:self.nq])
+            v = np.array(x_sol[self.nq:])
+            forces = np.array(u_sol[self.f_idx:])
             if self.include_base:
-                a_sol = np.array(u_sol[:self.na_opt])
+                a = np.array(u_sol[:self.na_opt])
             else:
-                a_j_sol = np.array(u_sol[:self.na_opt])
+                a_j = np.array(u_sol[:self.na_opt])
                 # Compute base acceleration from dynamics
-                a_b_sol = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q_sol, v_sol, a_j_sol, forces_sol)
-                a_sol = np.concatenate((a_b_sol, a_j_sol))
+                a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+                a_b = np.array(a_b).flatten()
+                a = np.concatenate((a_b, a_j))
 
-            self.q_sol.append(q_sol)
-            self.v_sol.append(v_sol)
-            self.a_sol.append(a_sol)
-            self.forces_sol.append(forces_sol)
+            self.q_sol.append(q)
+            self.v_sol.append(v)
+            self.a_sol.append(a)
+            self.forces_sol.append(forces)
 
             if not retract_all:
                 return
@@ -201,21 +208,22 @@ class OCPWholeBodyAcc(OCP):
             self.U_prev.append(np.array(u_sol))
 
             if i == 0 or retract_all:
-                q_sol = np.array(x_sol[:self.nq])
-                v_sol = np.array(x_sol[self.nq:])
-                forces_sol = np.array(u_sol[self.f_idx:])
+                q = np.array(x_sol[:self.nq])
+                v = np.array(x_sol[self.nq:])
+                forces = np.array(u_sol[self.f_idx:])
                 if self.include_base:
-                    a_sol = np.array(u_sol[:self.na_opt])
+                    a = np.array(u_sol[:self.na_opt])
                 else:
-                    a_j_sol = np.array(u_sol[:self.na_opt])
+                    a_j = np.array(u_sol[:self.na_opt])
                     # Compute base acceleration from dynamics
-                    a_b_sol = self.dyn.base_acceleration_dynamics(self.ext_force_frame)(q_sol, v_sol, a_j_sol, forces_sol)
-                    a_sol = np.concatenate((a_b_sol, a_j_sol))
+                    a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+                    a_b = np.array(a_b).flatten()
+                    a = np.concatenate((a_b, a_j))
 
-                self.q_sol.append(q_sol)
-                self.v_sol.append(v_sol)
-                self.a_sol.append(a_sol)
-                self.forces_sol.append(forces_sol)
+                self.q_sol.append(q)
+                self.v_sol.append(v)
+                self.a_sol.append(a)
+                self.forces_sol.append(forces)
 
         dx_last = sol_x[self.nodes*nx_opt:]
         x_last = self.dyn.state_integrate()(x_init, dx_last)
@@ -224,3 +232,57 @@ class OCPWholeBodyAcc(OCP):
         if retract_all:
             self.q_sol.append(np.array(x_last[:self.nq]))
             self.v_sol.append(np.array(x_last[self.nq:]))
+
+    def compile_solution(self, num_steps=3):
+        # Compile the first num_steps of the solution, to easily load on hardware
+        sol_x = ca.MX.sym("sol_x", self.opti.x.size()[0])
+        x_init = ca.MX.sym("x_init", self.nx)
+        nx_opt = self.ndx_opt + self.nu_opt[0]  # nu_opt is constant
+
+        q_sol, v_sol, a_sol, forces_sol, tau_sol = [], [], [], [], []
+
+        for i in range(num_steps):
+            sol = sol_x[i*nx_opt : (i+1)*nx_opt]
+            dx_sol = sol[:self.ndx_opt]
+            u_sol = sol[self.ndx_opt:]
+            x_sol = self.dyn.state_integrate()(x_init, dx_sol)
+
+            q = x_sol[:self.nq]
+            v = x_sol[self.nq:]
+            forces = u_sol[self.f_idx:]
+            if self.include_base:
+                a = u_sol[:self.na_opt]
+            else:
+                a_j = u_sol[:self.na_opt]
+                # Compute base acceleration from dynamics
+                a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
+                a = ca.vertcat(a_b, a_j)
+
+            # Compute torques
+            tau_rnea = self.dyn.rnea_dynamics(self.ext_force_frame)(q, v, a, forces)
+            tau_j = tau_rnea[6:]  # just joints
+
+            q_sol.append(q)
+            v_sol.append(v)
+            a_sol.append(a)
+            forces_sol.append(forces)
+            tau_sol.append(tau_j)
+
+        # Stack lists into outputs
+        q_out = ca.horzcat(*q_sol).T
+        v_out = ca.horzcat(*v_sol).T
+        a_out = ca.horzcat(*a_sol).T
+        forces_out = ca.horzcat(*forces_sol).T
+        tau_out = ca.horzcat(*tau_sol).T
+
+        # Create function
+        retract_function = ca.Function(
+            "retract_solution",
+            [sol_x, x_init],
+            [q_out, v_out, a_out, forces_out, tau_out],
+            ["sol_x", "x_init"],
+            ["q", "v", "a", "forces", "tau"]
+        )
+
+        # Generate C code
+        retract_function.generate("retract_solution.c")

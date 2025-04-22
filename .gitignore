@@ -4,6 +4,8 @@
 
 # Codegen
 codegen/build
+codegen/retract
+codegen/sqp
 *.c
 
 # NAO

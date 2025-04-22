@@ -7,8 +7,8 @@ from optimization import make_ocp
 from ocp_args import OCP_ARGS
 
 # Parameters
-robot = B2(reference_pose="standing", payload=None)
-# robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
+# robot = B2(reference_pose="standing", payload=None)
+robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 dynamics = "whole_body_rnea"
 gait_type = "trot"
 gait_period = 0.8
@@ -26,10 +26,10 @@ swing_height = 0.07
 swing_vel_limits = [0.1, -0.2]
 
 # Solver
-solver = "fatrop"
+solver = "osqp"
 compile_solver = False
 
-debug = True  # print info
+debug = False  # print info
 
 
 def main():
@@ -50,6 +50,7 @@ def main():
         default_args=default_args,
         robot=robot,
         nodes=nodes,
+        solver=solver,
     )
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
@@ -63,10 +64,10 @@ def main():
 
     ocp.update_initial_state(x_init)
     ocp.update_gait_sequence(t_current)
-    ocp.init_solver(solver, warm_start=False)
+    ocp.init_solver()
 
     if solver == "fatrop" and compile_solver:
-        ocp.compile_solver()
+        ocp.compile_solver(warm_start=False)
 
         # Evaluate solver function that was compiled
         contact_schedule = ocp.opti.value(ocp.contact_schedule)
@@ -98,6 +99,9 @@ def main():
         ocp.solve(retract_all=True)
 
     print("Solve time (ms):", ocp.solve_time * 1000)
+
+    T = sum([ocp.opti.value(dt) for dt in ocp.dts])
+    print("Horizon length (s): ", T)
 
     if debug:
         print("************** DEBUG **************")
@@ -155,9 +159,6 @@ def main():
         print("Std tau_diff: ", np.std(tau_diffs))
         print("Avg tau_b_norm: ", np.mean(tau_b_norms))
         print("Std tau_b_norm: ", np.std(tau_b_norms))
-
-    T = sum([ocp.opti.value(dt) for dt in ocp.dts])
-    print("Horizon length (s): ", T)
 
     # Visualize
     robot_instance.initViewer()
