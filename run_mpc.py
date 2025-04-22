@@ -31,7 +31,7 @@ swing_vel_limits = [0.1, -0.2]
 mpc_loops = 100
 
 # Solver
-solver = "osqp"
+solver = "fatrop"
 warm_start = True
 compile_solver = True
 load_compiled_solver = None

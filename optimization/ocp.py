@@ -297,7 +297,9 @@ class OCP:
 
             # NOTE: Uncomment to test compiled functions
             # self.sqp_data = ca.external("sqp_data", "codegen/sqp/libsqp_data_b2_waj_N30.so")
-            # self.hess_diag = np.loadtxt("codegen/sqp/sqp_hess_b2_waj_N30.txt")
+            # self.f_data = ca.external("f_data", "codegen/sqp/libf_data_b2_rnea_N14.so")
+            # self.g_data = ca.external("g_data", "codegen/sqp/libg_data_b2_rnea_N14.so")
+            # self.hess_diag = np.loadtxt("codegen/sqp/sqp_hess_b2_rnea_N14.txt")
 
             # OSQP formulation with dummy data and diagonal hessian
             A_rows, A_cols = J_g.sparsity().get_triplet()  # store sparsity pattern
@@ -401,8 +403,8 @@ class OCP:
                 print("Solve time (ms): ", (end - start) * 1000)
 
                 # Line search
-                # current_x = self._armijo_line_search(sol_dx, current_x, current_params)
-                current_x += sol_dx
+                current_x = self._armijo_line_search(sol_dx, current_x, current_params)
+                # current_x += sol_dx
 
             end_time = time.time()
             self.solve_time = end_time - start_time
@@ -412,7 +414,7 @@ class OCP:
             print("Max violation: ", violation_max)
 
             # NOTE: Uncomment to test retract function
-            # retract_fn = ca.external("retract_solution", "codegen/retract/libretract_b2_waj.so")
+            # retract_fn = ca.external("retract_solution", "codegen/retract/libretract_b2_rnea_N14.so")
             # x_init = self.opti.value(self.x_init, self.opti.initial())
             # retract = retract_fn(current_x, x_init)
             # print("Retract solution: ", retract)

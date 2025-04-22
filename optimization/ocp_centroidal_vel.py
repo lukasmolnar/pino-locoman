@@ -247,7 +247,7 @@ class OCPCentroidalVel(OCP):
                 a = (v_next - v) / dts[i]
 
                 # For base use more percise dynamics (as in RSL Unified MPC paper)
-                a_j = a[6:]
+                a_j = a[6:].flatten()
                 a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
                 a_b = np.array(a_b).flatten()
                 a = np.concatenate((a_b, a_j))

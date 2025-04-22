@@ -142,7 +142,7 @@ class OCPWholeBodyRNEA(OCP):
         dv = dx[self.nv:]  # delta v
         q = self.get_q(i)
         v = self.get_v(i)
-        a = self.get_acc(i)
+        a = self.get_a(i)
         forces = self.get_forces(i)
         tau_j = self.get_tau(i)
         dt = self.dts[i]
@@ -180,7 +180,7 @@ class OCPWholeBodyRNEA(OCP):
         x = self.dyn.state_integrate()(self.x_init, dx)
         return x[self.nq:]
 
-    def get_acc(self, i):
+    def get_a(self, i):
         if self.include_acc:
             a = self.U_opt[i][:self.na_opt]
         else:
