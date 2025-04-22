@@ -1,3 +1,4 @@
+import pinocchio as pin
 import pinocchio.casadi as cpin
 import casadi as ca
 
@@ -101,3 +102,54 @@ class DynamicsWholeBodyTorque(Dynamics):
         a = cpin.aba(self.model, self.data, q, v, tau, f_ext)
 
         return ca.Function("aba_dyn", [q, v, tau_j, forces], [a], ["q", "v", "tau_j", "forces"], ["a"])
+
+    def srb_dynamics(self, ext_force_frame=None):
+        q = ca.SX.sym("q", self.nq)  # positions
+        q_j_fixed = ca.SX.sym("q_j_fixed", self.nj)  # joint positions fixed
+        v_b = ca.SX.sym("v_b", 6)  # velocities
+        a_b = ca.SX.sym("a_b", 6)  # accelerations
+
+        # End-effector forces
+        ee_frames = self.foot_frames.copy()
+        if ext_force_frame:
+            ee_frames.append(ext_force_frame)
+        forces = ca.SX.sym("forces", 3 * len(ee_frames))
+
+        q_b = q[:7]
+        q_fixed = ca.vertcat(q_b, q_j_fixed)
+        v = ca.vertcat(v_b, [0] * self.nj)  # zero joint velocities
+        a = ca.vertcat(a_b, [0] * self.nj)  # zero joint accelerations
+
+        # SRB with RNEA
+        f_ext = [cpin.Force(ca.SX.zeros(6)) for _ in range(self.model.njoints)]
+        cpin.framesForwardKinematics(self.model, self.data, q)
+        for idx, frame_id in enumerate(ee_frames):
+            # OCS2 implementation
+            joint_id = self.model.frames[frame_id].parentJoint
+            translation_joint_to_contact_frame = self.model.frames[frame_id].placement.translation
+            rotation_world_to_joint_frame = self.data.oMi[joint_id].rotation.T
+
+            f_world = forces[idx * 3 : (idx + 1) * 3]
+            f_lin = rotation_world_to_joint_frame @ f_world
+            f_ang = ca.cross(translation_joint_to_contact_frame, f_lin)
+            f = ca.vertcat(f_lin, f_ang)
+            f_ext[joint_id] = cpin.Force(f)
+
+        tau_rnea = cpin.rnea(self.model, self.data, q_fixed, v, a)  # q_fixed!
+
+        tau_ext_base = ca.SX.zeros(6)
+        for idx, frame_id in enumerate(ee_frames):
+            f_world = forces[idx * 3 : (idx + 1) * 3]
+            J_c = cpin.computeFrameJacobian(self.model, self.data, q, frame_id, pin.LOCAL_WORLD_ALIGNED)
+            J_c_lin_base = J_c[:3, :6]
+            tau_ext_base += J_c_lin_base.T @ f_world
+
+        tau_srb = tau_rnea[:6] - tau_ext_base
+
+        return ca.Function(
+            "srb_dyn",
+            [q, q_j_fixed, v_b, a_b, forces],
+            [tau_srb],
+            ["q", "q_j_fixed", "v_b", "a_b", "forces"],
+            ["tau_srb"]
+        )

@@ -148,6 +148,7 @@ class OCPWholeBodyRNEA(OCP):
         dt = self.dts[i]
 
         # Dynamics constraint
+        rnea_nodes = 10
         dx_next = self.DX_opt[i+1]
         dq_next = dx_next[:self.nv]
         dv_next = dx_next[self.nv:]
@@ -155,11 +156,21 @@ class OCPWholeBodyRNEA(OCP):
         self.opti.subject_to(dq_next == dq + v * dt)
         if self.include_acc:
             # Otherwise a inherently uses this finite difference
-            self.opti.subject_to(dv_next == dv + a * dt)
+            if i < rnea_nodes:
+                self.opti.subject_to(dv_next == dv + a * dt)
+            else:
+                self.opti.subject_to(dv_next[:6] == dv[:6] + a[:6] * dt)  # base
 
         # RNEA constraint
         tau_rnea = self.dyn.rnea_dynamics(self.ext_force_frame)(q, v, a, forces)
-        self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
+        if i < rnea_nodes:
+            self.opti.subject_to(tau_rnea[:6] == [0] * 6)  # base
+        else:
+            q_j_fixed = self.x_init[7:self.nq]
+            v_b = v[:6]
+            a_b = a[:6]
+            tau_srb = self.dyn.srb_dynamics(self.ext_force_frame)(q, q_j_fixed, v_b, a_b, forces)
+            self.opti.subject_to(tau_srb[:6] == [0] * 6)  # base
 
         # Torque constraints
         if i < self.tau_nodes:
