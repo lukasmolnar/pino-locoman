@@ -6,8 +6,8 @@ from .ocp import OCP
 
 
 class OCPCentroidalVel(OCP):
-    def __init__(self, robot, solver, nodes, include_base=False):
-        super().__init__(robot, solver, nodes)
+    def __init__(self, robot, solver, nodes, tau_nodes, include_base=False):
+        super().__init__(robot, solver, nodes, tau_nodes)
 
         # Dynamics
         self.dyn = DynamicsCentroidalVel(self.model, self.mass, self.foot_frames)
@@ -106,6 +106,13 @@ class OCPCentroidalVel(OCP):
             gaps = self.dyn.dynamics_gaps()(h, q, v)
             self.opti.subject_to(gaps == [0] * 6)
 
+        if i < self.tau_nodes:
+            # Torque limits (estimate through contact Jacobian)
+            tau_j = self.dyn.tau_estimate(self.ext_force_frame)(q, forces)
+            tau_min = -self.robot.joint_torque_max
+            tau_max = self.robot.joint_torque_max
+            self.opti.subject_to(self.opti.bounded(tau_min, tau_j, tau_max))
+
     def get_h(self, i):
         dx = self.DX_opt[i]
         x = self.dyn.state_integrate()(self.x_init, dx)
@@ -185,9 +192,10 @@ class OCPCentroidalVel(OCP):
             if self.include_base:
                 v_next = np.array(u_sol_next[:self.nv_opt])
             else:
-                v_j_next = np.array(u_sol_next[:self.nv_opt])
+                v_j_next = np.array(u_sol_next[:self.nv_opt]).flatten()
                 # Compute base velocity from dynamics
                 v_b_next = self.dyn.base_vel_dynamics()(h, q, v_j_next)
+                v_b_next = np.array(v_b_next).flatten()
                 v_next = np.concatenate((v_b_next, v_j_next))
             a = (v_next - v) / dts[i]
 
@@ -228,7 +236,7 @@ class OCPCentroidalVel(OCP):
                 if self.include_base:
                     v = np.array(u_sol[:self.nv_opt])
                 else:
-                    v_j = np.array(u_sol[:self.nv_opt])
+                    v_j = np.array(u_sol[:self.nv_opt]).flatten()
                     # Compute base velocity from dynamics
                     v_b = self.dyn.base_vel_dynamics()(h, q, v_j)
                     v_b = np.array(v_b).flatten()
@@ -240,9 +248,10 @@ class OCPCentroidalVel(OCP):
                 if self.include_base:
                     v_next = np.array(u_sol_next[:self.nv_opt])
                 else:
-                    v_j_next = np.array(u_sol_next[:self.nv_opt])
+                    v_j_next = np.array(u_sol_next[:self.nv_opt]).flatten()
                     # Compute base velocity from dynamics
                     v_b_next = self.dyn.base_vel_dynamics()(h, q, v_j_next)
+                    v_b_next = np.array(v_b_next).flatten()
                     v_next = np.concatenate((v_b_next, v_j_next))
                 a = (v_next - v) / dts[i]
 

@@ -12,14 +12,15 @@ robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 dynamics = "whole_body_rnea"
 gait_type = "trot"
 gait_period = 0.8
-nodes = 14
-dt_min = 0.01  # used for simulation
-dt_max = 0.08
+nodes = 16
+tau_nodes = 3  # add torque limits for this many nodes
+dt_min = 0.015  # used for simulation
+dt_max = 0.06
 
 # Tracking targets
 base_vel_des = np.array([0.2, 0, 0, 0, 0, 0])  # linear + angular
 ext_force_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0, 0, 0])
+arm_vel_des = np.array([0.2, 0, 0])
 
 # Swing params
 swing_height = 0.07
@@ -49,8 +50,9 @@ def main():
         dynamics=dynamics,
         default_args=default_args,
         robot=robot,
-        nodes=nodes,
         solver=solver,
+        nodes=nodes,
+        tau_nodes=tau_nodes,
     )
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)
