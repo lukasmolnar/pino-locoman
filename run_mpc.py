@@ -9,19 +9,20 @@ from optimization import make_ocp
 from ocp_args import OCP_ARGS
 
 # Parameters
-# robot = B2(reference_pose="standing", payload=None)
+# robot = B2(reference_pose="standing", payload="rear")
 robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 dynamics ="whole_body_rnea"
 gait_type = "trot"
 gait_period = 0.8
-nodes = 14
-dt_min = 0.01  # used for simulation
-dt_max = 0.08
+nodes = 16
+tau_nodes = 3  # add torque limits for this many nodes
+dt_min = 0.015  # used for simulation
+dt_max = 0.06
 
 # Tracking targets
 base_vel_des = np.array([0.2, 0, 0, 0, 0, 0])  # linear + angular
 ext_force_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0, 0, 0])
+arm_vel_des = np.array([0.2, 0, 0])
 
 # Swing params
 swing_height = 0.07
@@ -33,9 +34,9 @@ mpc_loops = 100
 # Solver
 solver = "fatrop"
 warm_start = True
-compile_solver = True
+compile_solver = False
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_b2_waf_N14.so"
+# load_compiled_solver = "libsolver_b2g_rnea_N16.so"
 
 debug = True  # print info
 plot = True
@@ -44,8 +45,10 @@ plot = True
 def mpc_loop(ocp, robot_instance):
     x_init = ocp.x_nom
     solve_times = []
+    constr_viol = []
     if dynamics == "whole_body_rnea":
         tau_prev = np.zeros(robot.nj)  # previous torque solution
+        ocp.update_previous_torques(tau_prev)
 
     if solver == "fatrop" and compile_solver:
         if load_compiled_solver:
@@ -101,8 +104,14 @@ def mpc_loop(ocp, robot_instance):
             end_time = time.time()
             sol_time = end_time - start_time
             solve_times.append(sol_time)
-
             print("Solve time (ms): ", sol_time * 1000)
+
+            # Constraint violation
+            stacked_params = ocp.opti.value(ocp.opti.p)
+            g, lbg, ubg = ocp.g_data(sol_x, stacked_params)
+            cv = ocp._constraint_violation_norm_inf(g, lbg, ubg)
+            constr_viol.append(cv)
+            print("CV (inf norm): ", cv)
 
             # Retract solution and update x_init
             ocp.retract_stacked_sol(sol_x, retract_all=False)
@@ -137,13 +146,17 @@ def mpc_loop(ocp, robot_instance):
             # Solve
             ocp.solve(retract_all=False)
             solve_times.append(ocp.solve_time)
+            constr_viol.append(ocp.constr_viol)
 
             # Update x_init
             x_init = ocp.dyn.state_integrate()(x_init, ocp.DX_prev[1])
             robot_instance.display(ocp.q_sol[-1])  # display last q
 
+    solve_times = solve_times[80:]
+    constr_viol = constr_viol[80:]
     print("Avg solve time (ms): ", np.average(solve_times) * 1000)
     print("Std solve time (ms): ", np.std(solve_times) * 1000)
+    print("Avg CV (inf norm): ", np.average(constr_viol))
 
     return ocp
 
@@ -170,8 +183,9 @@ def main():
         dynamics=dynamics,
         default_args=default_args,
         robot=robot,
-        nodes=nodes,
         solver=solver,
+        nodes=nodes,
+        tau_nodes=tau_nodes,
     )
     ocp.set_time_params(dt_min, dt_max)
     ocp.set_swing_params(swing_height, swing_vel_limits)

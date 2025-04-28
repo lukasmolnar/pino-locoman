@@ -6,8 +6,8 @@ from .ocp import OCP
 
 
 class OCPWholeBodyABA(OCP):
-    def __init__(self, robot, solver, nodes):
-        super().__init__(robot, solver, nodes)
+    def __init__(self, robot, solver, nodes, tau_nodes):
+        super().__init__(robot, solver, nodes, tau_nodes)
 
         # Dynamics
         self.dyn = DynamicsWholeBodyTorque(self.model, self.mass, self.foot_frames)
@@ -104,6 +104,12 @@ class OCPWholeBodyABA(OCP):
         # self.opti.subject_to(dq_next == dq + v * dt + 0.5 * a * dt**2)
         self.opti.subject_to(dq_next == dq + v * dt)
         self.opti.subject_to(dv_next == dv + a * dt)
+
+        if i < self.tau_nodes:
+            # Torque limits
+            tau_min = -self.robot.joint_torque_max
+            tau_max = self.robot.joint_torque_max
+            self.opti.subject_to(self.opti.bounded(tau_min, tau_j, tau_max))
 
     def get_q(self, i):
         dx = self.DX_opt[i]

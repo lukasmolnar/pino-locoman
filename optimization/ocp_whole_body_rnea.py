@@ -7,8 +7,7 @@ from .ocp import OCP
 
 class OCPWholeBodyRNEA(OCP):
     def __init__(self, robot, solver, nodes, tau_nodes, include_acc=True):
-        super().__init__(robot, solver, nodes)
-        self.tau_nodes = tau_nodes
+        super().__init__(robot, solver, nodes, tau_nodes)
 
         self.dyn = DynamicsWholeBodyTorque(self.model, self.mass, self.foot_frames)
 
@@ -325,14 +324,14 @@ class OCPWholeBodyRNEA(OCP):
 
     def compile_solution(self, num_steps=3):
         # Compile the first num_steps of the solution, to easily load on hardware
-        sol_x = ca.MX.sym("sol_x", self.opti.x.size()[0])
+        nx_opt = self.ndx_opt + self.nu_opt[0]  # num_steps should be <= tau_nodes
+        sol_x = ca.MX.sym("sol_x", num_steps * nx_opt)
         x_init = ca.MX.sym("x_init", self.nx)
 
         q_sol, v_sol, a_sol, forces_sol, tau_sol = [], [], [], [], []
         idx = 0
 
         for i in range(num_steps):
-            nx_opt = self.ndx_opt + self.nu_opt[i]
             sol = sol_x[idx : idx + nx_opt]
             idx += nx_opt
 

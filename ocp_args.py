@@ -14,7 +14,6 @@ OCP_ARGS = {
         # the input just contains joint torques
     },
     "whole_body_rnea": {
-        "tau_nodes": 3,  # after this many nodes, joint torques are removed from the input
         "include_acc": True,  # whether to include accelerations in the input (necessary for Fatrop due to structure detection!)
     }
 }

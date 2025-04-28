@@ -7,8 +7,8 @@ from .ocp import OCP
 
 
 class OCPWholeBodyAcc(OCP):
-    def __init__(self, robot, solver, nodes, include_base=False):
-        super().__init__(robot, solver, nodes)
+    def __init__(self, robot, solver, nodes, tau_nodes, include_base=False):
+        super().__init__(robot, solver, nodes, tau_nodes)
 
         # Dynamics
         self.dyn = DynamicsWholeBodyAcc(self.model, self.mass, self.foot_frames)
@@ -110,6 +110,13 @@ class OCPWholeBodyAcc(OCP):
             # Path constraint for dynamics gaps
             gaps = self.dyn.dynamics_gaps(self.ext_force_frame)(q, v, a, forces)
             self.opti.subject_to(gaps == [0] * 6)
+
+        if i < self.tau_nodes:
+            # Torque limits (estimate through contact Jacobian)
+            tau_j = self.dyn.tau_estimate(self.ext_force_frame)(q, forces)
+            tau_min = -self.robot.joint_torque_max
+            tau_max = self.robot.joint_torque_max
+            self.opti.subject_to(self.opti.bounded(tau_min, tau_j, tau_max))
 
     def get_q(self, i):
         dx = self.DX_opt[i]
@@ -214,7 +221,7 @@ class OCPWholeBodyAcc(OCP):
                 if self.include_base:
                     a = np.array(u_sol[:self.na_opt])
                 else:
-                    a_j = np.array(u_sol[:self.na_opt])
+                    a_j = np.array(u_sol[:self.na_opt]).flatten()
                     # Compute base acceleration from dynamics
                     a_b = self.dyn.base_acc_dynamics(self.ext_force_frame)(q, v, a_j, forces)
                     a_b = np.array(a_b).flatten()

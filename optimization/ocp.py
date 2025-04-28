@@ -9,7 +9,7 @@ from dynamics import DynamicsCentroidalVel
 
 
 class OCP:
-    def __init__(self, robot, solver, nodes):
+    def __init__(self, robot, solver, nodes, tau_nodes):
         self.robot = robot
         self.model = robot.model
         self.data = robot.data
@@ -26,6 +26,7 @@ class OCP:
 
         self.solver = solver
         self.nodes = nodes
+        self.tau_nodes = tau_nodes  # add torque limits for this many nodes
         self.mass = self.data.mass[0]
         self.opti = ca.Opti()
 
@@ -108,6 +109,23 @@ class OCP:
         # Initial state
         self.opti.subject_to(self.DX_opt[0] == [0] * self.ndx_opt)
 
+        if self.arm_ee_frame:
+            # Compute global velocity target for arm end-effector
+            q_0 = self.x_init[:self.nq]
+            arm_pos_0 = self.dyn.get_frame_position(self.arm_ee_frame)(q_0)
+            base_pos_0 = self.dyn.get_base_position()(q_0)
+            base_rot_0 = self.dyn.get_base_rotation()(q_0)
+
+            arm_vel_des_global = base_rot_0 @ self.arm_vel_des
+            arm_vel_des_global[2] = self.arm_vel_des[2]  # keep z-velocity
+            arm_vel_des_global += self.base_vel_des[:3]  # add base velocity
+
+            # Include angular velocity contribution
+            base_ang_vel = self.base_vel_des[3:]
+            arm_pos_rel = arm_pos_0 - base_pos_0
+            ang_vel_correction = ca.cross(base_ang_vel, arm_pos_rel)
+            arm_vel_des_global += ang_vel_correction
+
         for i in range(self.nodes):
             # Gather state and input info
             q = self.get_q(i)
@@ -140,7 +158,7 @@ class OCP:
                     continue
 
                 # Contact: Zero xy-velocity
-                vel = self.dyn.get_frame_velocity(frame_id, relative_to_base=False)(q, v)
+                vel = self.dyn.get_frame_velocity(frame_id)(q, v)
                 vel_xy = vel[:2]
                 self.opti.subject_to(in_contact * vel_xy == [0] * 2)
 
@@ -174,9 +192,9 @@ class OCP:
 
             # Arm velocity task
             if self.arm_ee_frame:
-                vel = self.dyn.get_frame_velocity(self.arm_ee_frame, relative_to_base=True)(q, v)
+                vel = self.dyn.get_frame_velocity(self.arm_ee_frame)(q, v)
                 vel_lin = vel[:3]
-                vel_diff = vel_lin - self.arm_vel_des
+                vel_diff = vel_lin - arm_vel_des_global  # global!
                 self.opti.subject_to(vel_diff == [0] * 3)
 
             # Joint limits
@@ -262,7 +280,18 @@ class OCP:
             }
             self.opti.solver(self.solver, opts)
 
+            # Also save g_data to check constraint violation
+            x = self.opti.x
+            p = self.opti.p
+            g = self.opti.g
+            lbg = self.opti.lbg
+            ubg = self.opti.ubg
+            self.g_data = ca.Function("g_data", [x, p], [g, lbg, ubg])
+
         elif self.solver == "osqp":
+            # How many SQP iterations
+            self.sqp_iters = 1
+
             # OSQP options
             self.osqp_opts = {
                 "max_iter": 100,
@@ -296,7 +325,7 @@ class OCP:
             self.hess_diag = np.diag(hess_val)
 
             # NOTE: Uncomment to test compiled functions
-            # self.sqp_data = ca.external("sqp_data", "codegen/sqp/libsqp_data_b2_waj_N30.so")
+            # self.sqp_data = ca.external("sqp_data", "codegen/sqp/libsqp_data_b2_rnea_N14.so")
             # self.f_data = ca.external("f_data", "codegen/sqp/libf_data_b2_rnea_N14.so")
             # self.g_data = ca.external("g_data", "codegen/sqp/libg_data_b2_rnea_N14.so")
             # self.hess_diag = np.loadtxt("codegen/sqp/sqp_hess_b2_rnea_N14.txt")
@@ -372,6 +401,13 @@ class OCP:
             # Store dual variables
             self.lam_g = self.sol.value(self.opti.lam_g)
 
+            # Check constraint violation
+            sol_x = self.sol.value(self.opti.x)
+            params = self.opti.value(self.opti.p)
+            g, lbg, ubg = self.g_data(sol_x, params)
+            self.constr_viol = self._constraint_violation_norm_inf(g, lbg, ubg)
+            print("CV (inf norm): ", self.constr_viol)
+
         elif self.solver == "osqp":
             print("***************** OSQP *****************")
             # Get current state and parameters
@@ -379,8 +415,7 @@ class OCP:
             current_params = self.opti.value(self.opti.p, self.opti.initial())
             start_time = time.time()
 
-            # TODO: How many iterations?
-            for _ in range(1):
+            for _ in range(self.sqp_iters):
                 # Get data
                 start = time.time()
                 grad_f, J_g, g, lbg, ubg = self.sqp_data(current_x, current_params)
@@ -410,8 +445,8 @@ class OCP:
             self.solve_time = end_time - start_time
 
             g, lbg, ubg = self.g_data(current_x, current_params)
-            violation_max = self._constraint_violation_max(g, lbg, ubg)
-            print("Max violation: ", violation_max)
+            self.constr_viol = self._constraint_violation_norm_inf(g, lbg, ubg)
+            print("CV (inf norm): ", self.constr_viol)
 
             # NOTE: Uncomment to test retract function
             # retract_fn = ca.external("retract_solution", "codegen/retract/libretract_b2_rnea_N14.so")
@@ -441,7 +476,7 @@ class OCP:
         f, grad_f = self.f_data(current_x, current_params)
         g, lbg, ubg = self.g_data(current_x, current_params)
 
-        g_metric = self._constraint_violation_metric(g, lbg, ubg)
+        g_metric = self._constraint_violation_norm_2(g, lbg, ubg)
         armijo_metric = grad_f.T @ dx
         accepted = False
 
@@ -451,7 +486,7 @@ class OCP:
             new_f, _ = self.f_data(new_x, current_params)
             new_g, lbg, ubg = self.g_data(new_x, current_params)
 
-            new_g_metric = self._constraint_violation_metric(new_g, lbg, ubg)
+            new_g_metric = self._constraint_violation_norm_2(new_g, lbg, ubg)
             if new_g_metric > g_max:
                 if new_g_metric < (1 - gamma) * g_metric:
                     print("Line search: g metric high, but improving")
@@ -479,7 +514,7 @@ class OCP:
             print("Line search: Didn't converge!")
             return current_x
 
-    def _constraint_violation_metric(self, g, lbg, ubg):
+    def _constraint_violation_norm_2(self, g, lbg, ubg):
         lb_violations = np.maximum(0, lbg - g)
         ub_violations = np.maximum(0, g - ubg)
         violations = np.concatenate((lb_violations, ub_violations))
@@ -487,7 +522,7 @@ class OCP:
         metric = np.linalg.norm(violations)
         return metric
 
-    def _constraint_violation_max(self, g, lbg, ubg):
+    def _constraint_violation_norm_inf(self, g, lbg, ubg):
         lb_violations = np.maximum(0, lbg - g)
         ub_violations = np.maximum(0, g - ubg)
         violations = np.concatenate((lb_violations, ub_violations))
