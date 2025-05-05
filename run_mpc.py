@@ -10,39 +10,40 @@ from ocp_args import OCP_ARGS
 
 # Parameters
 # robot = B2(reference_pose="standing", payload="rear")
-robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
+robot = B2G(reference_pose="standing_with_arm_up", arm_joints=4)
 dynamics ="whole_body_rnea"
 gait_type = "trot"
 gait_period = 0.8
-nodes = 16
+nodes = 14
 tau_nodes = 3  # add torque limits for this many nodes
 dt_min = 0.015  # used for simulation
-dt_max = 0.06
+dt_max = 0.07
 
 # Tracking targets
-base_vel_des = np.array([0.2, 0, 0, 0, 0, 0])  # linear + angular
-ext_force_des = np.array([0, 0, 0])
-arm_vel_des = np.array([0.2, 0, 0])
+base_vel_des = np.array([-0.1, 0, 0, 0, 0, 0])  # linear + angular
+ext_force_des = np.array([50, 0, 0])
+arm_vel_des = np.array([0, 0, 0])
 
 # Swing params
 swing_height = 0.07
 swing_vel_limits = [0.1, -0.2]
 
 # MPC
-mpc_loops = 100
+mpc_loops = 300
 
 # Solver
 solver = "fatrop"
 warm_start = True
-compile_solver = False
+compile_solver = True
 load_compiled_solver = None
-# load_compiled_solver = "libsolver_b2g_rnea_N16.so"
+# load_compiled_solver = "libsolver_b2g_arm4_rnea_N14.so"
 
 debug = True  # print info
 plot = True
 
 
 def mpc_loop(ocp, robot_instance):
+    print(ocp.opti.x.shape)
     x_init = ocp.x_nom
     solve_times = []
     constr_viol = []
@@ -51,13 +52,14 @@ def mpc_loop(ocp, robot_instance):
         ocp.update_previous_torques(tau_prev)
 
     if solver == "fatrop" and compile_solver:
+        # Initialize solver and compile it
+        ocp.init_solver()
+        ocp.compile_solver(warm_start)
+
+        # Get solver function
         if load_compiled_solver:
-            # Load solver
             solver_function = ca.external("compiled_solver", "codegen/lib/" + load_compiled_solver)
         else:
-            # Initialize solver and compile it
-            ocp.init_solver()
-            ocp.compile_solver(warm_start)
             solver_function = ocp.solver_function
 
         # Warm start (dual variables)

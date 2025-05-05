@@ -35,9 +35,7 @@ class OCPCentroidalVel(OCP):
             [0],          # base rot z
         ))
         Q_joint_pos_diag = np.tile([1000, 500, 500], 4)  # hip, thigh, calf
-
-        if self.arm_ee_frame:
-            Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
+        Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * self.arm_joints))  # arm
 
         Q_diag = np.concatenate((Q_com_diag, Q_base_pos_diag, Q_joint_pos_diag))
         R_diag = np.concatenate((

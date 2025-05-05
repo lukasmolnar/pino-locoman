@@ -12,10 +12,10 @@ robot = B2G(reference_pose="standing_with_arm_up", ignore_arm=False)
 dynamics = "whole_body_rnea"
 gait_type = "trot"
 gait_period = 0.8
-nodes = 16
+nodes = 14
 tau_nodes = 3  # add torque limits for this many nodes
 dt_min = 0.015  # used for simulation
-dt_max = 0.06
+dt_max = 0.07
 
 # Tracking targets
 base_vel_des = np.array([0.2, 0, 0, 0, 0, 0])  # linear + angular

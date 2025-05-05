@@ -28,16 +28,15 @@ class OCPWholeBodyABA(OCP):
             [0],          # base rot z
         ))
         Q_joint_pos_diag = np.tile([1000, 500, 500], 4)  # hip, thigh, calf
-
-        if self.arm_ee_frame:
-            Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * 6))  # arm
+        Q_joint_pos_diag = np.concatenate((Q_joint_pos_diag, [100] * self.arm_joints))  # arm
 
         Q_vel_diag = np.concatenate((
-            [2000] * 2,     # base lin x/y
-            [1000],         # base lin z
-            [1000] * 2,     # base ang x/y
-            [2000],         # base ang z
-            [1] * self.nj,  # joint vel (all of them)
+            [2000] * 2,  # base lin x/y
+            [1000],  # base lin z
+            [1000] * 2,  # base ang x/y
+            [2000],  # base ang z
+            [2] * 12,  # joint vel (legs)
+            [10] * self.arm_joints  # joint vel (arm)
         ))
 
         Q_diag = np.concatenate((Q_base_pos_diag, Q_joint_pos_diag, Q_vel_diag))

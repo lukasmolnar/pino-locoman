@@ -36,6 +36,7 @@ class Robot:
 
         self.ext_force_frame = None  # external force
         self.arm_ee_frame = None  # arm end-effector
+        self.arm_joints = 0  # number of arm joints to consider (the other ones are locked)
 
     def set_gait_sequence(self, gait_type, gait_period):
         self.gait_sequence = GaitSequence(gait_type, gait_period)
@@ -77,15 +78,14 @@ class B2(Robot):
 
 
 class B2G(Robot):
-    def __init__(self, reference_pose="standing_with_arm_up", ignore_arm=False):
+    def __init__(self, reference_pose="standing_with_arm_up", arm_joints=6):
         urdf_path = "robots/b2g_description/urdf/b2g.urdf"
         srdf_path = "robots/b2g_description/srdf/b2g.srdf"
-        if ignore_arm:
-            lock_joints = range(14, 21)  # all arm joints
-        else:
-            lock_joints = [20]  # just gripper joint
+        lock_idx = 14 + arm_joints  # 14 is for the universe (0), base (1), and the 3 legs (12)
+        lock_joints = range(lock_idx, 21)  # 20 is the last joint (the gripper)
 
         super().__init__(urdf_path, srdf_path, reference_pose, lock_joints=lock_joints)
+        self.arm_joints = arm_joints  # init sets it to 0
 
         # Leg joint limits (tiled: hip, thigh, calf)
         self.joint_pos_min = np.tile([-0.87, -0.94, -2.82], 4)
@@ -93,26 +93,19 @@ class B2G(Robot):
         self.joint_vel_max = np.tile([23.0, 23.0, 14.0], 4)
         self.joint_torque_max = np.tile([200, 200, 320], 4)
 
-        if not ignore_arm:
+        if self.arm_joints > 0:
             # External force at gripper
             self.ext_force_frame = self.model.getFrameId("gripperStator", type=pin.FIXED_JOINT)
             self.arm_ee_frame = self.model.getFrameId("gripperStator", type=pin.FIXED_JOINT)
             self.nf += 3
 
             # Arm joint limits
-            self.joint_pos_min = np.concatenate((
-                self.joint_pos_min,
-                [-2.62, 0.0, -2.88, -1.52, -1.34, -2.79]
-            ))
-            self.joint_pos_max = np.concatenate((
-                self.joint_pos_max,
-                [2.62, 2.97, 0.0, 1.52, 1.34, 2.79]
-            ))
-            self.joint_vel_max = np.concatenate((
-                self.joint_vel_max,
-                [3.14, 3.14, 3.14, 3.14, 3.14, 3.14]
-            ))
-            self.joint_torque_max = np.concatenate((
-                self.joint_torque_max,
-                [30, 60, 30, 30, 30, 30]
-            ))
+            arm_pos_min = np.array([-2.62, 0.0, -2.88, -1.52, -1.34, -2.79])
+            arm_pos_max = np.array([2.62, 2.97, 0.0, 1.52, 1.34, 2.79])
+            arm_vel_max = np.array([3.14, 3.14, 3.14, 3.14, 3.14, 3.14])
+            arm_torque_max = np.array([30, 60, 30, 30, 30, 30])
+
+            self.joint_pos_min = np.concatenate((self.joint_pos_min, arm_pos_min[:self.arm_joints]))    
+            self.joint_pos_max = np.concatenate((self.joint_pos_max, arm_pos_max[:self.arm_joints]))
+            self.joint_vel_max = np.concatenate((self.joint_vel_max, arm_vel_max[:self.arm_joints]))
+            self.joint_torque_max = np.concatenate((self.joint_torque_max, arm_torque_max[:self.arm_joints]))

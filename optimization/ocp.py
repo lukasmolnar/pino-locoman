@@ -17,6 +17,7 @@ class OCP:
         self.foot_frames = robot.foot_frames
         self.ext_force_frame = robot.ext_force_frame
         self.arm_ee_frame = robot.arm_ee_frame
+        self.arm_joints = robot.arm_joints
         self.n_feet = len(self.foot_frames)
 
         self.nq = robot.nq
@@ -271,7 +272,7 @@ class OCP:
             }
             opts["fatrop"] = {
                 "print_level": 1,
-                "max_iter": 10,
+                "max_iter": 8,
                 "tol": 1e-3,
                 "mu_init": 1e-4,
                 "warm_start_init_point": True,
